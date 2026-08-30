@@ -17,7 +17,8 @@
 //     options (dbh#E4, wrong-sky#E2). And an ended run is never saved, so a
 //     "Resume" can't drop you back onto the frame you already lost.
 
-import { createRun } from "./state.js?v=mirage-0.13.0";
+import { createRun } from "./state.js?v=mirage-0.13.1";
+import { buildCamp, CAMP_SEED } from "./camp.js?v=mirage-0.13.1";
 
 export const SAVE_KEY = "mirage:run";
 // Bumped whenever the shape below changes incompatibly. A save from an older
@@ -29,13 +30,20 @@ export const SAVE_KEY = "mirage:run";
 // two keys, and the first `sim.stats.falseCrafts += 1` would write NaN — which
 // then rides silently into the debrief. Adding a counter to a serialised bag of
 // counters is a schema change even though nothing was renamed or removed.
+// v4: the camp is a world, not a seed. The camp's map cannot be regenerated
+// from a seed — it is authored — so a save taken on it now rebuilds through
+// buildCamp(). Before this, resuming a camp run silently handed the player a
+// BASIN generated from the sentinel seed, with their camp positions pasted onto
+// it. The tutorial autosaves every five seconds, so any player who quit part
+// way through the walk in and pressed Resume got that.
+//
 // v3: cohesion. Following was replaced by a chain, a periodic ping and a CALL
 // verb, all of which keep per-character deadlines (wanderUntil, pingAt/Until,
 // summonBy/Until, the two call cadences). `wanderUntil` gates three rng draws,
 // so a v2 snapshot restored without it re-rolls on a different tick and the
 // resumed run silently forks — which is precisely how the divergence test
 // caught it.
-export const SAVE_VERSION = 3;
+export const SAVE_VERSION = 4;
 
 const store = () => (typeof localStorage === "undefined" ? null : localStorage);
 
@@ -257,6 +265,13 @@ export function serializeRun(sim) {
     // re-phases every sighting roll after a resume.
     sightTimer: sim.sightTimer ?? 0,
     lastDt: sim.lastDt ?? 0,
+    // Camp-only flags. Not cosmetic: `noDrain` decides whether a whole class of
+    // per-tick rng draws happens at all, and the other three decide which verbs
+    // the prompt resolver will even offer.
+    noDrain: !!sim.noDrain,
+    canClearMoss: !!sim.canClearMoss,
+    callUnlocked: sim.callUnlocked !== false,
+    reachedTrainer: !!sim.reachedTrainer,
   };
 }
 
@@ -268,12 +283,29 @@ export function serializeRun(sim) {
  */
 export function deserializeRun(data) {
   if (!data || data.v !== SAVE_VERSION) return null;
+  // THE CAMP IS NOT A SEED. Every basin is a pure function of its seed and
+  // regenerates exactly; the camp is hand-placed and regenerates as nothing at
+  // all. Passing the sentinel through to generateWorld produced a perfectly
+  // valid BASIN and pasted the saved camp positions onto it — no error, no
+  // warning, just a resume into somewhere the player had never been. The seed
+  // is the routing key because it is already in every payload at every version,
+  // which is exactly what camp.js said the sentinel was for.
+  const camp = data.seed === CAMP_SEED;
+  const world = camp ? buildCamp() : null;
   const sim = createRun({
     seed: data.seed,
     difficulty: data.difficulty,
     level: data.level,
     campaignLength: data.campaignLength,
+    world,
   });
+  if (camp) {
+    sim.trainer = world.trainer;
+    sim.noDrain = !!data.noDrain;
+    sim.canClearMoss = !!data.canClearMoss;
+    sim.callUnlocked = data.callUnlocked !== false;
+    sim.reachedTrainer = !!data.reachedTrainer;
+  }
 
   const byId = new Map(sim.party.map((c) => [c.id, c]));
   for (const s of data.party) {

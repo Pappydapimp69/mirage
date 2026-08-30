@@ -121,22 +121,49 @@ const BTN = { A: 0, B: 1, X: 2, Y: 3, LB: 4, RB: 5, LT: 6, RT: 7, L3: 10, START:
   // conditionally-shown Resume button, so absolute row indices move whenever
   // the menu's shape changes. What matters is that one press down from Party
   // lands on the button that starts a run.
-  const focusIdAfterStick = await page.evaluate(() => document.querySelector("#title .gpfocus")?.id);
-  assert(focusIdAfterStick === "startBtn", `left stick down did not advance focus to Start, got ${focusIdAfterStick}`);
+  // NAVIGATE BY IDENTITY, NEVER BY COUNTING PRESSES.
+  //
+  // The comment above already said row indices move when the menu's shape
+  // changes — and the code then counted a fixed number of DOWNs anyway. Two
+  // buttons have since been added above Start, so every counted hop landed one
+  // row short: the difficulty pick was made on the Party row, and the press
+  // meant for Start opened the tutorial instead. The test then spent the rest
+  // of its life measuring a camp run with no items in it and died on the first
+  // thing that could not survive that, printing a bare "cannot set property of
+  // undefined" and none of the failures it had already collected.
+  const focusNow = () => page.evaluate(() => document.querySelector("#title .gpfocus")?.id || null);
+  const rowNow = () => page.evaluate(() => document.querySelector("#title .gpfocus")?.dataset.row ?? null);
+  const walkTo = async (id, limit = 10) => {
+    for (let i = 0; i < limit; i++) {
+      if ((await focusNow()) === id) return true;
+      await tap(BTN.DOWN);
+    }
+    return (await focusNow()) === id;
+  };
+  const walkUpToRow = async (row, limit = 10) => {
+    for (let i = 0; i < limit; i++) {
+      if ((await rowNow()) === String(row)) return true;
+      await tap(BTN.UP);
+    }
+    return (await rowNow()) === String(row);
+  };
+  const focusIdAfterStick = await focusNow();
+  assert(!!focusIdAfterStick, "left stick down lost menu focus entirely");
+  assert(await walkTo("startBtn"), `could not reach Start on the pad, stopped at ${await focusNow()}`);
 
-  // Back up to the difficulty row and pick "Bleak" with dpad-right + A, purely
-  // on the gamepad, then confirm it actually took (no mouse ever touched this).
-  await tap(BTN.UP);
-  await tap(BTN.UP);
+  // Back up to the DIFFICULTY row (row 0) and pick "Bleak" with dpad-right + A,
+  // purely on the gamepad, then confirm it actually took.
+  assert(await walkUpToRow(0), `could not reach the difficulty row, stopped at row ${await rowNow()}`);
   await tap(BTN.RIGHT);
   await tap(BTN.RIGHT);
   await tap(BTN.A);
   const pickedDiff = await page.evaluate(() => document.querySelector('[data-diff].sel')?.dataset.diff);
   assert(pickedDiff === "bleak", `gamepad-only difficulty pick failed, got ${pickedDiff}`);
 
-  // The Party row sits between difficulty and Start now — prove the co-op
-  // option is reachable on the pad, land it back on Solo, then walk to Start.
+  // The Party row sits between difficulty and Start — prove the co-op option is
+  // reachable on the pad, land it back on Solo, then walk to Start.
   await tap(BTN.DOWN);
+  assert((await rowNow()) === "1", `one row below difficulty should be Party, got row ${await rowNow()}`);
   await tap(BTN.RIGHT);
   await tap(BTN.A);
   assert(await page.evaluate(() => window.__mirage.coopAllowed === true),
@@ -145,14 +172,19 @@ const BTN = { A: 0, B: 1, X: 2, Y: 3, LB: 4, RB: 5, LT: 6, RT: 7, L3: 10, START:
   await tap(BTN.A);
   assert(await page.evaluate(() => window.__mirage.coopAllowed === false),
     "gamepad-only return to Solo failed");
-  await tap(BTN.DOWN);
+  assert(await walkTo("startBtn"), `could not walk back down to Start, stopped at ${await focusNow()}`);
   await tap(BTN.A);
   await page.waitForFunction(() => !!window.__mirage.sim, null, { timeout: 10000 });
   const started = await page.evaluate(() => ({
     difficulty: window.__mirage.sim.difficulty,
+    seed: window.__mirage.sim.seed,
+    camp: !!window.__mirage.sim.world.cellKind,
     hudVisible: !document.getElementById("hudLayer").classList.contains("hidden"),
   }));
-  assert(started.difficulty === "bleak", `run started with the wrong difficulty: ${started.difficulty}`);
+  // Names the RUN as well as the setting: "wrong difficulty" was the symptom
+  // of having started an entirely different game, and the seed says which.
+  assert(started.difficulty === "bleak",
+    `run started wrong: difficulty ${started.difficulty}, seed ${started.seed}${started.camp ? " (this is the CAMP, not a basin)" : ""}`);
   assert(started.hudVisible, "HUD did not appear after a gamepad-only Start");
 
   // ---- in-run verbs, gamepad only ------------------------------------------
@@ -197,6 +229,10 @@ const BTN = { A: 0, B: 1, X: 2, Y: 3, LB: 4, RB: 5, LT: 6, RT: 7, L3: 10, START:
   await page.evaluate(() => {
     const s = window.__mirage.sim;
     const it = s.items.find((x) => !x.taken);
+    // Loud, and it names WHICH RUN it is looking at. When the menu walk above
+    // started the wrong game this threw a bare "cannot set property of
+    // undefined", which says nothing about the actual cause.
+    if (!it) throw new Error(`no item to pick up — seed ${s.seed}, camp ${!!s.world.cellKind}, ${s.items.length} items`);
     it.discovered = true;
     window.__mirage.teleport(it.x, it.z);
   });
