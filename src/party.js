@@ -8,7 +8,7 @@
 // who lags, who starts narrating things that aren't there. Each rule below exists
 // to make an internal number legible from the outside without printing it.
 
-import { findPath, worldToCell, cellToWorld, moveWithCollision, isBlockedAt, CELL, GRID } from "./world.js?v=mirage-0.13.0";
+import { findPath, worldToCell, cellToWorld, moveWithCollision, isBlockedAt, CELL, GRID } from "./world.js?v=mirage-0.13.1";
 import {
   BAND,
   bandOf,
@@ -23,7 +23,7 @@ import {
   activatePylon,
   updatePing, isAnswering, isReturning,
   PRIME_WINDOW,
-} from "./state.js?v=mirage-0.13.0";
+} from "./state.js?v=mirage-0.13.1";
 
 // Higher band = worse. Lets a per-companion trait move the pylon-seeking
 // trigger EARLIER than the uniform BRITTLE tell everyone else gets, without

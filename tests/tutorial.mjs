@@ -78,7 +78,14 @@ check("no stage teaches a verb that the prompt resolver outranks at its site", (
   // duplicated, so re-ordering the resolver fails HERE instead of silently
   // starving a stage in play.
   const hud = readFileSync(new URL("../src/hud.js", import.meta.url), "utf8");
-  const block = hud.slice(hud.indexOf("function paintPrompt"), hud.indexOf("function paintPrompt") + 3000);
+  // Sliced to the END OF THE FUNCTION, not to a fixed character count. A window
+  // measured in characters silently narrows every time the function it watches
+  // grows, and the failure it eventually produces blames the subject ("the
+  // parse broke") rather than the window.
+  const from = hud.indexOf("function paintPrompt");
+  const rest = hud.slice(from + 1);
+  const nextFn = rest.search(/\n  function /);
+  const block = nextFn >= 0 ? hud.slice(from, from + 1 + nextFn) : hud.slice(from);
   const order = [];
   for (const [verb, marker] of [["pylon", "Set hands on the pylon"], ["pickup", "Pick up ${"], ["gather", "Hold to chop"], ["survey", "Survey ${"], ["strike", "strike ${"]]) {
     const at = block.indexOf(marker);

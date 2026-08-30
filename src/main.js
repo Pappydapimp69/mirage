@@ -6,18 +6,18 @@ import {
   possess, release, possessableCompanions, activatePylon, pylonAt,
   callCompanion, clearMoss, mossedAt,
   PARTY_SIZE, DIFFICULTY, LOG_RADIUS, PYLON_RADIUS, ITEM_CAP, ITEM_PICKUP_RADIUS, CAMPAIGN_LENGTH, ITEM_INFO,
-} from "./state.js?v=mirage-0.13.0";
-import { STAGES, openObjective, checkTrainer, observe, objectiveText, stageById } from "./tutorial.js?v=mirage-0.13.0";
-import { buildCamp, CAMP_SEED } from "./camp.js?v=mirage-0.13.0";
-import { createPercept, updatePercept, distortion, perceivedMonoliths, believedKinds } from "./percept.js?v=mirage-0.13.0";
-import { createRenderer } from "./render.js?v=mirage-0.13.0";
-import { createHud, renderDebrief, paintHint } from "./hud.js?v=mirage-0.13.0";
-import { createInput, ACTIONS } from "./input.js?v=mirage-0.13.0";
-import { createAudio } from "./audio.js?v=mirage-0.13.0";
-import { hashSeed } from "./rng.js?v=mirage-0.13.0";
-import { saveRun, loadSave, clearSave, deserializeRun, describeSave, loadSettings, saveSettings } from "./save.js?v=mirage-0.13.0";
+} from "./state.js?v=mirage-0.13.1";
+import { STAGES, openObjective, checkTrainer, observe, objectiveText, stageById } from "./tutorial.js?v=mirage-0.13.1";
+import { buildCamp, CAMP_SEED } from "./camp.js?v=mirage-0.13.1";
+import { createPercept, updatePercept, distortion, perceivedMonoliths, believedKinds } from "./percept.js?v=mirage-0.13.1";
+import { createRenderer } from "./render.js?v=mirage-0.13.1";
+import { createHud, renderDebrief, paintHint } from "./hud.js?v=mirage-0.13.1";
+import { createInput, ACTIONS } from "./input.js?v=mirage-0.13.1";
+import { createAudio } from "./audio.js?v=mirage-0.13.1";
+import { hashSeed } from "./rng.js?v=mirage-0.13.1";
+import { saveRun, loadSave, clearSave, deserializeRun, describeSave, loadSettings, saveSettings } from "./save.js?v=mirage-0.13.1";
 
-const BUILD = "mirage-0.13.0";
+const BUILD = "mirage-0.13.1";
 
 const el = (id) => document.getElementById(id);
 const canvas = el("gl");
