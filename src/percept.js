@@ -13,8 +13,8 @@
 
 import { HALLUCINATION, BAND, bandOf, ITEM_INFO, LUCIDITY_GRACE, CORROBORATE_RADIUS,
   LINK_RANGE, PING_RANGE,
-} from "./state.js?v=mirage-0.13.1";
-import { ITEM_KINDS } from "./world.js?v=mirage-0.13.1";
+} from "./state.js?v=mirage-0.13.2";
+import { ITEM_KINDS } from "./world.js?v=mirage-0.13.2";
 
 const PHANTOM_NAMES = ["the Sixth Stone", "the Watching Slab", "the Other Cairn", "the Hollow Tooth"];
 const PHANTOM_COMPANIONS = ["ODEN", "MARIS", "THE SEVENTH"];

@@ -17,8 +17,8 @@
 //     options (dbh#E4, wrong-sky#E2). And an ended run is never saved, so a
 //     "Resume" can't drop you back onto the frame you already lost.
 
-import { createRun } from "./state.js?v=mirage-0.13.1";
-import { buildCamp, CAMP_SEED } from "./camp.js?v=mirage-0.13.1";
+import { createRun } from "./state.js?v=mirage-0.13.2";
+import { buildCamp, CAMP_SEED } from "./camp.js?v=mirage-0.13.2";
 
 export const SAVE_KEY = "mirage:run";
 // Bumped whenever the shape below changes incompatibly. A save from an older

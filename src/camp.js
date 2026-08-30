@@ -23,7 +23,7 @@
 // wrong length — the failure surfaces somewhere far away as a NaN position or
 // an invisible floor. The returned object is asserted field-for-field in tests.
 
-import { CELL, GRID, FEATURE, cellToWorld, floodFill } from "./world.js?v=mirage-0.13.1";
+import { CELL, GRID, FEATURE, cellToWorld, floodFill } from "./world.js?v=mirage-0.13.2";
 
 /**
  * The reserved seed that means "this is the camp, not a basin".
