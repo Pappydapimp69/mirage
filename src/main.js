@@ -6,18 +6,18 @@ import {
   possess, release, possessableCompanions, activatePylon, pylonAt,
   callCompanion, clearMoss, mossedAt,
   PARTY_SIZE, DIFFICULTY, LOG_RADIUS, PYLON_RADIUS, ITEM_CAP, ITEM_PICKUP_RADIUS, CAMPAIGN_LENGTH, ITEM_INFO,
-} from "./state.js?v=mirage-0.13.1";
-import { STAGES, openObjective, checkTrainer, observe, objectiveText, stageById } from "./tutorial.js?v=mirage-0.13.1";
-import { buildCamp, CAMP_SEED } from "./camp.js?v=mirage-0.13.1";
-import { createPercept, updatePercept, distortion, perceivedMonoliths, believedKinds } from "./percept.js?v=mirage-0.13.1";
-import { createRenderer } from "./render.js?v=mirage-0.13.1";
-import { createHud, renderDebrief, paintHint } from "./hud.js?v=mirage-0.13.1";
-import { createInput, ACTIONS } from "./input.js?v=mirage-0.13.1";
-import { createAudio } from "./audio.js?v=mirage-0.13.1";
-import { hashSeed } from "./rng.js?v=mirage-0.13.1";
-import { saveRun, loadSave, clearSave, deserializeRun, describeSave, loadSettings, saveSettings } from "./save.js?v=mirage-0.13.1";
+} from "./state.js?v=mirage-0.13.2";
+import { STAGES, openObjective, checkTrainer, observe, objectiveText, stageById } from "./tutorial.js?v=mirage-0.13.2";
+import { buildCamp, CAMP_SEED } from "./camp.js?v=mirage-0.13.2";
+import { createPercept, updatePercept, distortion, perceivedMonoliths, believedKinds } from "./percept.js?v=mirage-0.13.2";
+import { createRenderer } from "./render.js?v=mirage-0.13.2";
+import { createHud, renderDebrief, paintHint } from "./hud.js?v=mirage-0.13.2";
+import { createInput, ACTIONS } from "./input.js?v=mirage-0.13.2";
+import { createAudio } from "./audio.js?v=mirage-0.13.2";
+import { hashSeed } from "./rng.js?v=mirage-0.13.2";
+import { saveRun, loadSave, clearSave, deserializeRun, describeSave, loadSettings, saveSettings } from "./save.js?v=mirage-0.13.2";
 
-const BUILD = "mirage-0.13.1";
+const BUILD = "mirage-0.13.2";
 
 const el = (id) => document.getElementById(id);
 const canvas = el("gl");
@@ -330,6 +330,16 @@ function resumeRun() {
 
 /** Everything a run needs on screen, shared by a fresh start and a resume. */
 function mountRun(sim, openingLine) {
+  // DROP THE PREVIOUS RUN'S RENDERER FIRST.
+  //
+  // Every mount builds a fresh scene, a fresh geometry set and a fresh WebGL
+  // context on the same canvas. advanceLevel already disposed the outgoing one
+  // when moving basin to basin; this path — title -> run -> title -> run, and
+  // every tutorial start — never did, so a session that bounced in and out of
+  // the menu a few times stacked live contexts on one canvas. Browsers hard-cap
+  // those and start discarding the OLDEST, which presents as a black screen
+  // with nothing in the console.
+  run?.renderer?.dispose?.();
   const seedValue = sim.seed;
   const percept = createPercept(sim.player);
   const renderer = createRenderer(canvas, sim);
