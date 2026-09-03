@@ -4,6 +4,14 @@
 // isn't straight, it's curved", and blamed the MOVEMENT (which is exact: a
 // constant input walks a line with 0.0000 lateral deviation).
 //
+// 90 horizontal was the first correction and it was still too wide: the same
+// tester read the residual barrel as skewed WALKING ("up on the stick moves me
+// forward and slightly right"). Two defects wore one description — the stick
+// had a real cross-axis leak (fixed in input.js) AND the lens was still open
+// far enough to bend the straight line it walked. The default is now 78, and
+// the pause-menu ladder moved with it (70 / 78 / 90) so the menu cannot claim
+// a lens the camera is not running.
+//
 // So the invariant worth holding is aspect-independence: the horizontal angle
 // must stay put as the window changes shape. A vertical-fov camera silently
 // fails that, and no behavioural test notices.
@@ -26,29 +34,34 @@ const fails=[];const A=(c,m)=>{if(!c)fails.push(m)};
  const errs=[];page.on("pageerror",e=>errs.push(e.message));
  await page.goto(url,{waitUntil:"networkidle"});
  const def=await page.evaluate(()=>{ const M=window.__mirage; M.startRun({seed:1234}); M.advance(0.3);
-   const c=M.renderer.camera; return {h:+(2*Math.atan(Math.tan(c.fov*Math.PI/360)*c.aspect)*180/Math.PI).toFixed(0), hfov:M.renderer.hfov}; });
- A(def.h===90,`default should be 90 horizontal, got ${def.h}`);
+   const c=M.renderer.camera; return {h:+(2*Math.atan(Math.tan(c.fov*Math.PI/360)*c.aspect)*180/Math.PI).toFixed(0), hfov:M.renderer.hfov,
+     sel:document.querySelector('[data-fov].sel')?.dataset.fov}; });
+ A(def.h===78,`default should be 78 horizontal, got ${def.h}`);
+ // ...and the menu must not advertise a lens the camera is not running. On a
+ // fresh profile the pre-selected button is whatever the static markup says,
+ // so a default that drifts away from the ladder shows a silent lie.
+ A(def.sel===String(def.h),`fresh profile: menu shows ${def.sel} but camera is at ${def.h}`);
  // change it in the pause menu
- const wide=await page.evaluate(()=>{ document.querySelector('[data-fov="100"]').click();
+ const wide=await page.evaluate(()=>{ document.querySelector('[data-fov="90"]').click();
    const M=window.__mirage; M.advance(0.3); const c=M.renderer.camera;
    return {h:+(2*Math.atan(Math.tan(c.fov*Math.PI/360)*c.aspect)*180/Math.PI).toFixed(0),
            stored:JSON.parse(localStorage.getItem("mirage:settings")||"{}").fov}; });
- A(wide.h===100,`Wide should give 100 horizontal, got ${wide.h}`);
- A(wide.stored===100,`Wide should persist, stored ${wide.stored}`);
+ A(wide.h===90,`Wide should give 90 horizontal, got ${wide.h}`);
+ A(wide.stored===90,`Wide should persist, stored ${wide.stored}`);
  // survive a reload AND apply to the new run's renderer
  await page.reload({waitUntil:"networkidle"});
  const after=await page.evaluate(()=>{ const M=window.__mirage; M.startRun({seed:1234}); M.advance(0.3);
    const c=M.renderer.camera;
    return {h:+(2*Math.atan(Math.tan(c.fov*Math.PI/360)*c.aspect)*180/Math.PI).toFixed(0),
            sel:document.querySelector('[data-fov].sel')?.dataset.fov}; });
- A(after.h===100,`the stored FOV should apply to a fresh run, got ${after.h}`);
- A(after.sel==="100",`the Wide button should be pre-selected, got ${after.sel}`);
- // aspect independence: a different window must keep 100 horizontal, not warp
+ A(after.h===90,`the stored FOV should apply to a fresh run, got ${after.h}`);
+ A(after.sel==="90",`the Wide button should be pre-selected, got ${after.sel}`);
+ // aspect independence: a different window must keep the chosen angle, not warp
  await page.setViewportSize({width:1200,height:400}); // ultrawide-ish 3:1
  const ultra=await page.evaluate(()=>{ const M=window.__mirage; M.renderer.resize(); M.advance(0.3);
    const c=M.renderer.camera; return {a:+c.aspect.toFixed(2),
      h:+(2*Math.atan(Math.tan(c.fov*Math.PI/360)*c.aspect)*180/Math.PI).toFixed(0)}; });
- A(Math.abs(ultra.h-100)<=1,`horizontal FOV must hold across aspect ${ultra.a}, got ${ultra.h}`);
+ A(Math.abs(ultra.h-90)<=1,`horizontal FOV must hold across aspect ${ultra.a}, got ${ultra.h}`);
  // pause-menu grid: every row reachable, no two controls on the same row+col
  const grid=await page.evaluate(()=>{ const M=window.__mirage; M.act(M.ACTIONS.PAUSE);
    const els=[...document.querySelectorAll("#pauseLayer [data-row]")].filter(e=>e.offsetParent!==null);
@@ -60,5 +73,5 @@ const fails=[];const A=(c,m)=>{if(!c)fails.push(m)};
  A(errs.length===0,`page errors: ${JSON.stringify(errs.slice(0,2))}`);
  await b.close(); s.close();
  if(fails.length){console.log(fails.length+" failed:");fails.forEach(f=>console.log("  ✗ "+f));process.exit(1);}
- console.log("field of view: OK — 90 default, adjustable, persists, aspect-independent, grid clean");
+ console.log("field of view: OK — 78 default, adjustable, persists, aspect-independent, grid clean");
 })().catch(e=>{console.error("CRASH:",e.message);process.exit(1);});

@@ -29,7 +29,12 @@ async function get(url) {
 }
 
 const IMPORT_RE = /from\s+"(\.\/[^"]+)"/g;
-const TOKEN_RE = /\?v=(mirage-[\d.]+)/g;
+// Any project's token, not one hard-coded prefix — and an EMPTY token set is a
+// failure rather than a pass. A hard-coded prefix silently matches nothing the
+// moment the project is renamed or forked, and the tool then prints "OK — every
+// module carries the current token" over a graph in which it checked none. A
+// verifier that cannot fail is worse than no verifier, because it is believed.
+const TOKEN_RE = /\?v=([a-z]+-[\d.]+)/g;
 
 (async () => {
   console.log(`checking ${BASE}`);
@@ -87,6 +92,9 @@ const TOKEN_RE = /\?v=(mirage-[\d.]+)/g;
     }
   }
 
+  if (tokens.size === 0) {
+    note("no cache-bust token appears anywhere in the live module graph — nothing was actually checked");
+  }
   if (tokens.size > 1) {
     note(`more than one cache-bust token is live (${[...tokens].join(", ")}) — a partial stamp loads a module twice as two instances`);
   }

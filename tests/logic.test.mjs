@@ -17,6 +17,7 @@ import {
   ITEM_CAP, ITEM_PICKUP_RADIUS, ITEM_INFO, VOUCH_WINDOW, PYLON_PAUSE, PYLON_DRAW, PRIME_WINDOW, activatePylon, pylonAt, PHANTOM_ITEM_COST, CRAFT_RECIPES, CAMPAIGN_LENGTH, LUCIDITY_GRACE, FULL_DRAIN_AT, graceMultiplier,
   GATHER_RADIUS, GATHER_HOLD_TIME, GATHER_YIELD, STAKE_COST, TRAIT_VARIANCE, COMPANION_TEMPLATES,
   COMPANION_ITEM_CAP, OFFER_RADIUS,
+  groupWith,
 } from "../src/state.js";
 import { generateWorld, validate, findPath, isBlockedAt, GRID, ITEM_COUNT, ITEM_KINDS, TREE_COUNT, STONE_COUNT } from "../src/world.js";
 import {
@@ -2296,13 +2297,44 @@ check("the player walks, and cannot walk through rock", () => {
   assert(!isBlockedAt(sim.world, sim.player.x, sim.player.z), "player ended up inside rock");
 });
 
-check("companions follow the lead", () => {
+// Following is gone. This used to assert the party stayed in formation behind
+// the lead; the invariant that actually matters now is that they stay a GROUP —
+// a chain where everyone is linked to somebody, not a column in your pocket.
+check("the party reforms around a lead who has stopped", () => {
+  // NOT "the group never breaks". Walking off fast is SUPPOSED to leave them
+  // behind — being able to outrun your party is where the aloneness comes from.
+  // What must be true is that they come back when you stop, on the ping's own
+  // schedule rather than instantly.
   const sim = createRun({ seed: 43 });
-  const before = sim.companions.map((c) => Math.hypot(c.x - sim.player.x, c.z - sim.player.z));
-  advance(sim, 12, { move: { x: 0, z: -1 } });
-  const after = sim.companions.map((c) => Math.hypot(c.x - sim.player.x, c.z - sim.player.z));
-  const kept = after.filter((d, i) => d < before[i] + 12).length;
-  assert(kept >= 4, `the party lost formation: ${after.map((d) => d.toFixed(1))}`);
+  advance(sim, 12, { move: { x: 0, z: -1 } });          // walk off
+  advance(sim, 70, { move: { x: 0, z: 0 } });           // then wait
+  const group = groupWith(sim.party, sim.player.id);
+  assert(group.size >= 4, `the party never came back: only ${group.size} of ${sim.party.length} linked after waiting`);
+});
+
+// The other half of the same invariant, and the one that makes it a real test:
+// a group is not allowed to be a huddle. If everybody is inside a few metres of
+// the lead, cohesion has quietly become following again.
+check("staying a group does not mean standing on the lead", () => {
+  const sim = createRun({ seed: 43 });
+  advance(sim, 90, { move: { x: 0, z: 0 } });
+  const spread = sim.companions.map((c) => Math.hypot(c.x - sim.player.x, c.z - sim.player.z));
+  assert(Math.max(...spread) > 8, `the whole party is within ${Math.max(...spread).toFixed(1)}m of the lead — this is following by another name`);
+});
+
+// brain: dog#E41. A cluster driven by balanced inflow and outflow reaches a
+// fixed point and freezes there forever. The party looked fine on a single
+// snapshot while being completely motionless between them, so this samples the
+// SPREAD over time and asserts it actually changes.
+check("the party does not settle into a fixed radius", () => {
+  const sim = createRun({ seed: 43 });
+  const samples = [];
+  for (let i = 0; i < 6; i++) {
+    advance(sim, 20, { move: { x: 0, z: 0 } });
+    samples.push(sim.companions.reduce((a, c) => a + Math.hypot(c.x - sim.player.x, c.z - sim.player.z), 0) / sim.companions.length);
+  }
+  const lo = Math.min(...samples), hi = Math.max(...samples);
+  assert(hi - lo > 1.5, `the party froze at a fixed radius: ${samples.map((v) => v.toFixed(1)).join(", ")}`);
 });
 
 check("a brittle companion breaks formation for a pylon they remember", () => {
@@ -2371,8 +2403,14 @@ check("companions volunteer remarks, and a gone one says gone things", () => {
   advance(sim, 60);
   normal = sim.companions.length; // remarks are emitted as events; count over a window
   let chatter = 0;
-  for (let i = 0; i < 60; i++) {
-    tick(sim, 0.5);
+  // tick() CLAMPS dt to 0.1 (a backgrounded tab must not teleport the run), so
+  // `tick(sim, 0.5)` sixty times is six seconds of sim, not thirty. This loop
+  // claimed to cover "a full minute" and covered six seconds; it passed on the
+  // luck of where each companion's remark cooldown happened to sit, and any
+  // change to the rng stream could tip it either way without touching chatter
+  // at all. Stepping at the clamp makes the window mean what it says.
+  for (let i = 0; i < 600; i++) {
+    tick(sim, 0.1);
     chatter += sim.events.filter((e) => e.kind === "chatter").length;
   }
   assert(chatter > 0, "nobody said anything over a full minute");
@@ -3346,7 +3384,14 @@ check("standing at a false claim while lucid offers the strike", () => {
 // panel never says what it BUYS).
 check("the help panel explains what checking in actually buys you", () => {
   const html = fsReadFileSync(new URL("../index.html", import.meta.url), "utf8");
-  const panel = html.slice(html.indexOf('id="howto"'), html.indexOf('id="howto"') + 4000);
+  // Sliced to the panel's own closing tag, not to a fixed character count —
+  // same reason as the resolver-ladder window in tests/tutorial.mjs. Adding a
+  // section to the top of the panel used to push the sentences this check is
+  // about out of reach, and it then reported "a bound verb with no explanation"
+  // about text sitting right there.
+  const from = html.indexOf('id="howto"');
+  const end = html.indexOf("</div>", from);
+  const panel = html.slice(from, end > 0 ? end : undefined);
   const prose = panel.replace(/<p class="keys"[\s\S]*?<\/p>/g, "").replace(/<[^>]+>/g, " ");
   for (const claim of [/check\s*in/i, /record/i, /thrown out|discredit/i, /strike/i]) {
     assert(claim.test(prose), `the help panel never mentions ${claim} — a bound verb with no explanation`);

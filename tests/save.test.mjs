@@ -10,6 +10,7 @@
 
 import { createRun, tick, LUCIDITY_GRACE, FULL_DRAIN_AT, beginHallucinating, pickupItem, gatherResource } from "../src/state.js";
 import { makeRng } from "../src/rng.js";
+import { buildCamp, CAMP_SEED } from "../src/camp.js";
 import {
   serializeRun, deserializeRun, saveRun, loadSave, clearSave, hasSave,
   describeSave, SAVE_KEY, SAVE_VERSION, loadSettings, saveSettings, SETTINGS_KEY,
@@ -341,6 +342,42 @@ check("corrupt or absent preference storage reads as defaults", () => {
   // And with no storage at all (the Node default here).
   eq(loadSettings().difficulty, "standard", "missing storage should read as defaults");
   eq(saveSettings({ volume: 0.1 }), false, "saveSettings should report failure with no storage");
+});
+
+// --- the camp is not a seed ----------------------------------------------
+
+check("a run saved on the camp resumes ON THE CAMP", () => {
+  // Every BASIN is a pure function of its seed and this file is built on that.
+  // The camp is the exception: it is authored, and the sentinel seed
+  // regenerates as a perfectly valid basin instead. A resume therefore used to
+  // drop the player into a randomly generated map with their camp positions
+  // pasted on — no error anywhere, and nothing here looked, because every other
+  // test in this file uses a basin. The tutorial autosaves every five seconds,
+  // so quitting part way through the walk in and pressing Resume got exactly
+  // that.
+  const world = buildCamp();
+  const sim = createRun({ seed: CAMP_SEED, world });
+  const back = deserializeRun(serializeRun(sim));
+  assert(back, "a camp save did not restore at all");
+  eq(back.world.blocked.length, world.blocked.length, "grid size changed");
+  let same = true;
+  for (let i = 0; i < world.blocked.length; i++) if (back.world.blocked[i] !== world.blocked[i]) { same = false; break; }
+  assert(same, "the resumed world is not the camp — a basin was generated from the sentinel seed");
+  assert(back.world.trainer && back.trainer, "the resumed camp lost the trainer");
+});
+
+check("the camp's own flags survive, because they gate draws and verbs", () => {
+  const world = buildCamp();
+  const sim = createRun({ seed: CAMP_SEED, world });
+  sim.noDrain = true;
+  sim.canClearMoss = true;
+  sim.callUnlocked = false;
+  sim.reachedTrainer = true;
+  const back = deserializeRun(serializeRun(sim));
+  eq(back.noDrain, true, "noDrain did not survive — a whole class of per-tick draws would restart");
+  eq(back.canClearMoss, true, "canClearMoss did not survive — the moss becomes immovable again");
+  eq(back.callUnlocked, false, "callUnlocked did not survive — a verb the tutorial has not taught comes back unlocked");
+  eq(back.reachedTrainer, true, "reachedTrainer did not survive — objective one reopens");
 });
 
 console.log(`\n${passed} passed, ${failures.length} failed`);

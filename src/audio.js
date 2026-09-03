@@ -97,7 +97,104 @@ export function createAudio() {
     hum.connect(humGain);
     hum.start();
     nodes.humGain = humGain;
+
+    // ---- WOODLAND, for the camp -------------------------------------------
+    // The basin's bed is wind, a low drone and a detuned partner — correct for
+    // a fogged plain where the mix is one of the few honest channels. The camp
+    // is a wood in daylight and was inheriting all of it, so a peaceful place
+    // sounded like the thing it exists to prepare you for.
+    //
+    // Its own layer, crossfaded against the basin bed rather than replacing it.
+    // EQUAL POWER (cos/sin, g1^2+g2^2=1) because the two beds are uncorrelated
+    // signals — brain: dog#E57, where a linear fade between uncorrelated layers
+    // dips 3 dB at the midpoint. A linear crossfade here would put an audible
+    // hole in the middle of every transition.
+    const woodGain = ctx.createGain();
+    woodGain.gain.value = 0;
+    woodGain.connect(master);
+    nodes.woodGain = woodGain;
+
+    // Leaves: filtered noise, band-passed high and gently swept so it breathes
+    // instead of hissing.
+    const leaves = ctx.createBufferSource();
+    leaves.buffer = noiseBuffer(6);
+    leaves.loop = true;
+    const leafFilter = ctx.createBiquadFilter();
+    leafFilter.type = "bandpass";
+    leafFilter.frequency.value = 2600;
+    leafFilter.Q.value = 0.7;
+    const leafGain = ctx.createGain();
+    leafGain.gain.value = 0.16;
+    leaves.connect(leafFilter).connect(leafGain).connect(woodGain);
+    leaves.start();
+    // A slow LFO on the filter — wind moving through a canopy, not a hiss.
+    const gust = ctx.createOscillator();
+    gust.type = "sine";
+    gust.frequency.value = 0.07;
+    const gustDepth = ctx.createGain();
+    gustDepth.gain.value = 900;
+    gust.connect(gustDepth).connect(leafFilter.frequency);
+    gust.start();
+
+    // Birds. Scheduled on the AUDIOCONTEXT CLOCK with a look-ahead window, never
+    // per-call setTimeout — brain: shadow#E1, JS timers drift and are throttled
+    // when the tab is backgrounded, so a bird would stutter or stop entirely
+    // the moment somebody alt-tabbed.
+    const birdBus = ctx.createGain();
+    birdBus.gain.value = 0.5;
+    birdBus.connect(woodGain);
+    nodes.birdBus = birdBus;
+    let nextCall = 0;
+    nodes.pumpBirds = () => {
+      if (!ctx || woodGain.gain.value < 0.02) return;
+      const horizon = ctx.currentTime + 2.5;
+      // Bounded by the horizon, so this can never queue an unbounded burst of
+      // voices (dog#E6's concurrent-voice budget, in the form this needs).
+      let guard = 0;
+      while (nextCall < horizon && guard++ < 8) {
+        if (nextCall < ctx.currentTime) nextCall = ctx.currentTime + 0.5;
+        chirp(nextCall);
+        nextCall += 2.2 + Math.random() * 5.5;
+      }
+    };
+
+    /** One short two-note call. Every node is disconnected on ended (dog#E6). */
+    function chirp(at) {
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.type = "sine";
+      const base = 1700 + Math.random() * 1400;
+      o.frequency.setValueAtTime(base, at);
+      o.frequency.exponentialRampToValueAtTime(base * (1.25 + Math.random() * 0.5), at + 0.07);
+      o.frequency.exponentialRampToValueAtTime(base * 0.92, at + 0.16);
+      g.gain.setValueAtTime(0.0001, at);
+      g.gain.exponentialRampToValueAtTime(0.14, at + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, at + 0.22);
+      o.connect(g).connect(birdBus);
+      o.start(at);
+      o.stop(at + 0.26);
+      // Connected/scheduled nodes are NOT freed for you.
+      o.onended = () => { try { o.disconnect(); g.disconnect(); } catch {} };
+    }
+
     return true;
+  }
+
+  /**
+   * Cross-fade between the basin bed and the woodland bed.
+   * @param wood 0 = basin, 1 = camp
+   */
+  function setBiome(wood) {
+    if (!ctx || !nodes.woodGain) return;
+    const w = Math.max(0, Math.min(1, wood));
+    // Equal power: the two beds are uncorrelated, so amplitudes must satisfy
+    // g1^2 + g2^2 = 1 or the midpoint loses 3 dB (dog#E57).
+    const gWood = Math.sin((w * Math.PI) / 2);
+    const gBasin = Math.cos((w * Math.PI) / 2);
+    ramp(nodes.woodGain.gain, gWood, 1.2);
+    if (nodes.windGain) ramp(nodes.windGain.gain, 0.22 * gBasin, 1.2);
+    if (nodes.humGain && w > 0.5) ramp(nodes.humGain.gain, 0, 1.2);
+    nodes.biome = w;
   }
 
   function ramp(param, value, seconds = 0.4) {
@@ -112,10 +209,18 @@ export function createAudio() {
    */
   function update(distortion, pylonProximity) {
     if (!started || !ctx) return;
-    ramp(nodes.wrongGain.gain, 0.13 * distortion, 1.2);
-    ramp(nodes.windGain.gain, 0.22 * (1 - distortion * 0.6), 1.5);
+    // SCALED BY THE BIOME. This runs every frame from the basin's palette and
+    // was undoing setBiome's crossfade on the next tick — the same shape as the
+    // renderer's per-frame fog drift resetting the camp's daylight. Anything
+    // set once has to be respected here or it lasts exactly one frame.
+    const wood = nodes.biome || 0;
+    const basin = Math.cos((wood * Math.PI) / 2);
+    ramp(nodes.wrongGain.gain, 0.13 * distortion * basin, 1.2);
+    ramp(nodes.windGain.gain, 0.22 * (1 - distortion * 0.6) * basin, 1.5);
     ramp(nodes.windFilter.frequency, 420 - distortion * 260, 1.5);
-    ramp(nodes.humGain.gain, 0.09 * pylonProximity, 0.5);
+    ramp(nodes.humGain.gain, 0.09 * pylonProximity * basin, 0.5);
+    // Top up the bird schedule inside its look-ahead window.
+    nodes.pumpBirds?.();
   }
 
   function blip({ freq = 440, dur = 0.16, type = "sine", gain = 0.18, slide = 0 } = {}) {
@@ -203,5 +308,5 @@ export function createAudio() {
     if (master) ramp(master.gain, muted ? 0 : volume, 0.2);
   }
 
-  return { start, update, play, whisper, setVolume, setMuted, get ready() { return started; } };
+  return { start, update, play, whisper, setVolume, setMuted, setBiome, get ready() { return started; } };
 }

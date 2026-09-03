@@ -1,19 +1,27 @@
-// formation.mjs — is the party actually a party?
+// formation.mjs — can you ever actually see your party?
 //
-// The player's report was "the team doesn't feel like a team, they just scatter
-// and do their own thing". That is a claim about PERCEPTION, and perception of a
-// companion has exactly two prerequisites in a first-person game: they have to be
-// inside the frustum, and they have to be close enough to read. Everything else
-// the party sim does — remarks, errands, breaking off for a pylon — is invisible
-// if those two never hold.
+// This file was built when companions FOLLOWED, and it asserted the thing that
+// mattered then: each forward station on screen more than half the time, nobody
+// more than 3.5 units off their assigned slot. Cohesion deleted both. There are
+// no stations, nothing follows, and a crew spread over ground is off-camera most
+// of the time BY DESIGN — that is where "am I alone out here" comes from.
 //
-// So this measures the only thing that can falsify the complaint: what fraction
-// of walking seconds each companion spends ON SCREEN, and how far each one drifts
-// from the formation bearing they were assigned. Not "did updateCompanions run".
+// Deleting the file would have been wrong though, because the complaint it was
+// written for is still live: "the team doesn't feel like a team, they just
+// scatter". The guarantee has simply changed shape. It is no longer "they are in
+// front of you"; it is:
+//
+//   1. you see SOMEBODY reasonably often, so the basin never feels empty,
+//   2. everybody is visible SOMETIMES over a long run, so nobody is structurally
+//      invisible the way an unreachable station used to make them, and
+//   3. when you CALL, the person you called comes, and you can see them.
+//
+// (3) is the one that replaces following outright: you cannot keep everyone in
+// frame any more, but you are never unable to bring somebody to you.
 //
 // Run: node tests/formation.mjs [seeds]
 
-import { createRun, tick } from "../src/state.js";
+import { createRun, tick, callCompanion } from "../src/state.js";
 import { isBlockedAt } from "../src/world.js";
 
 const SEEDS = Number(process.argv[2] || 8);
@@ -150,7 +158,44 @@ const failures = [];
 for (let seed = 1; seed <= Math.min(SEEDS, 4); seed++) {
   const { seen, all } = sweepVisibility(seed);
   const missing = all.filter((n) => !seen.has(n));
-  if (missing.length) failures.push(`seed ${seed}: never visible during a full turn — ${missing.join(", ")}`);
+  // A standing turn used to show you everyone, because everyone was arranged
+  // around you. Now they are out in the basin, so this is reported rather than
+  // failed — the real "is anybody structurally invisible" check is the
+  // never-once-on-screen assertion below, measured over the whole sweep.
+  if (missing.length) console.log(`  (seed ${seed}: not in frame during a standing turn — ${missing.join(", ")})`);
+}
+
+// --- the guarantee that replaces following -----------------------------------
+// You cannot keep the party in frame any more. What you can always do is bring
+// somebody to you — so if CALL ever stops delivering, the player is left with no
+// way to see another human being, and the basin becomes genuinely empty rather
+// than atmospherically lonely. This is the load-bearing check in this file now.
+{
+  let delivered = 0;
+  let attempts = 0;
+  for (let seed = 1; seed <= SEEDS; seed++) {
+    const sim = createRun({ seed, difficulty: "standard" });
+    // Walk off until the party is genuinely scattered and out of frame.
+    for (let i = 0; i < 60 / DT; i++) tick(sim, DT, { move: { x: 0, z: -1 }, yaw: sim.player.yaw });
+    const target = sim.companions.find((c) => !c.hallucinating);
+    if (!target) continue;
+    attempts++;
+    const res = callCompanion(sim, target.id);
+    if (!res.ok) continue;
+    // Give them the length of the call window to arrive.
+    let sawThem = false;
+    for (let i = 0; i < 40 / DT; i++) {
+      tick(sim, DT, { move: { x: 0, z: 0 }, yaw: sim.player.yaw });
+      const d = Math.hypot(target.x - sim.player.x, target.z - sim.player.z);
+      if (d <= LEGIBLE) { sawThem = true; break; }
+    }
+    if (sawThem) delivered++;
+  }
+  const rate = attempts ? delivered / attempts : 0;
+  console.log(`CALL brought them into view: ${(rate * 100).toFixed(0)}% of ${attempts} attempts`);
+  if (rate < 0.8) {
+    failures.push(`calling only brought somebody within sight ${(rate * 100).toFixed(0)}% of the time — the one guarantee that replaced following`);
+  }
 }
 
 console.log(`seeds ${SEEDS} · ${SECONDS}s of walking each`);
@@ -167,21 +212,23 @@ for (const [key, a] of [...totals.entries()].sort()) {
     .join(" ");
   console.log(`  ${key.padEnd(12)} on-screen ${pct}%  dist ${dist}  gap ${gap}  slot-in-rock ${blk}%  bearing-err ${err}deg`);
 
-  // The four forward stations exist to be seen. A floor rather than a target:
-  // errands, pylon breaks and hallucination episodes legitimately take people
-  // out of frame, and should. What must never come back is the old regime,
-  // where a station was assigned and then structurally unreachable.
-  const idx = Number(key.split(" ")[0]);
-  if (idx !== 5 && a.onScreen / a.samples < 0.5) {
-    failures.push(`${key} on screen only ${pct}% while walking (forward stations must clear 50%)`);
-  }
-  if (a.errN && a.gapSum / a.errN > 3.5) {
-    failures.push(`${key} averages ${gap} units off station (must hold within 3.5)`);
+  // NO PER-STATION FLOOR ANY MORE — there are no stations. What is still
+  // forbidden is a companion who is never seen at all, which is what an
+  // unreachable slot used to produce and what a broken wander would produce now.
+  if (a.onScreen === 0) {
+    failures.push(`${key} was never once on screen across ${SEEDS} seeds of walking`);
   }
 }
 
+// Measured on the shipped cohesion build: someone is in frame about a quarter of
+// walking seconds, against ~85% when they walked behind you. The floor is set
+// well under the measurement, as a floor and not a target — it exists to catch
+// the party going structurally invisible, not to pin the number. A run where
+// nobody is EVER in frame is a broken party; one where they are always in frame
+// is following by another name, so this is bounded on both sides.
 const anyPct = (anySum / sampleSum) * 100;
-if (anyPct < 70) failures.push(`someone on screen only ${anyPct.toFixed(1)}% of walking seconds (floor is 70%)`);
+if (anyPct < 12) failures.push(`someone on screen only ${anyPct.toFixed(1)}% of walking seconds (floor is 12%)`);
+if (anyPct > 80) failures.push(`someone on screen ${anyPct.toFixed(1)}% of walking seconds — the party is following again, not ranging`);
 
 if (failures.length) {
   for (const f of failures) console.error(`FAIL ${f}`);

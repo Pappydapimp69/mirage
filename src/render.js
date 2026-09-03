@@ -6,9 +6,9 @@
 // list as the real ones.
 
 import * as THREE from "../lib/three.module.js";
-import { CELL, GRID, cellToWorld } from "./world.js?v=mirage-0.11.2";
-import { perceivedMonoliths, perceivedPylons, perceivedCompanions, perceivedWorldItems, distortion } from "./percept.js?v=mirage-0.11.2";
-import { PYLON_RADIUS } from "./state.js?v=mirage-0.11.2";
+import { CELL, GRID, cellToWorld } from "./world.js?v=mirage-0.13.2";
+import { perceivedMonoliths, perceivedPylons, perceivedCompanions, perceivedWorldItems, distortion } from "./percept.js?v=mirage-0.13.2";
+import { PYLON_RADIUS } from "./state.js?v=mirage-0.13.2";
 
 const PALETTE = {
   sky: 0x0a0f16,
@@ -55,11 +55,22 @@ const EYE_HEIGHT = 1.72;
 // Horizontal field of view, in degrees. 90 sits in the ordinary first-person
 // band (most games ship 90-100 horizontal); past ~100 the perspective starts
 // reading as a fisheye lens rather than as a room.
-const DEFAULT_HFOV = 90;
+// 90 was too wide. Rectilinear projection stretches hard toward the frame edges
+// at that angle — trunks near the screen border lean and smear as you turn, and
+// it reads as the lens being wrong rather than as a wide view. It is also the
+// wrong choice for THIS game: a slow, close, wooded exploration where the
+// periphery is where you are trying to notice a figure. 78 keeps the edges
+// honest. Still a player setting (70-110) — this is only the default.
+const DEFAULT_HFOV = 78;
 // On a very tall/narrow window (a phone held upright) deriving vertical from a
 // fixed horizontal would balloon it, so cap it — a portrait player loses a
 // little horizontal instead of gaining a vertical fisheye.
-const MAX_VFOV = 78;
+// And a hard cap on the VERTICAL, which is what actually distorts. On a narrow
+// or square window verticalFov() from a wide horizontal runs away — at a 1:1
+// aspect a 90 horizontal solves to 90 vertical — so the cap is the only thing
+// standing between an unusual window shape and a fisheye. 68 is wide enough to
+// feel open and short of where the stretch becomes obvious.
+const MAX_VFOV = 68;
 
 /** The VERTICAL fov Three wants, for a given aspect, holding horizontal fixed. */
 function verticalFov(aspect, hfov = DEFAULT_HFOV) {
@@ -77,7 +88,15 @@ export function createRenderer(canvas, sim) {
   // Fog density set against SIGHT_RANGE (38 units): at 0.021 a marker at the
   // edge of sighting range was ~47% fogged out, which made exploring feel like
   // guessing. 0.014 keeps the basin oppressive but legible.
-  scene.fog = new THREE.FogExp2(PALETTE.fog, 0.014);
+  // The CAMP is daylight, not a fogged basin at dusk. Same scene, different
+  // weather: thinner fog so you can see the length of the path and the cabins
+  // at the far end, and a warmer ground colour. Built without this the camp
+  // rendered as a near-black clearing — correct geometry, unreadable place.
+  const isCamp = !!sim.world.cellKind;
+  scene.fog = new THREE.FogExp2(isCamp ? 0x8fa2b4 : PALETTE.fog, isCamp ? 0.006 : 0.014);
+  // Without this the sky is the clear colour — black — so a daylit camp still
+  // read as night above the treeline.
+  if (isCamp) scene.background = new THREE.Color(0x8fa2b4);
 
   // FIELD OF VIEW IS HORIZONTAL-FIRST ("Hor+"), and this matters more than it
   // looks. Three's PerspectiveCamera takes a VERTICAL fov, and this shipped at
@@ -100,8 +119,10 @@ export function createRenderer(canvas, sim) {
   rig.add(camera);
   scene.add(rig);
 
-  scene.add(new THREE.HemisphereLight(0x5d708c, 0x1d2230, 1.05));
-  const sun = new THREE.DirectionalLight(0xbfd0e6, 0.55);
+  scene.add(isCamp
+    ? new THREE.HemisphereLight(0xcfe0f2, 0x6a6555, 1.5)
+    : new THREE.HemisphereLight(0x5d708c, 0x1d2230, 1.05));
+  const sun = new THREE.DirectionalLight(isCamp ? 0xfff0d8 : 0xbfd0e6, isCamp ? 1.15 : 0.55);
   sun.position.set(-40, 60, 30);
   scene.add(sun);
   // A single carried lamp — cheaper than one light per companion, and it makes
@@ -116,8 +137,9 @@ export function createRenderer(canvas, sim) {
   {
     const pos = groundGeo.attributes.position;
     const colors = new Float32Array(pos.count * 3);
-    const lo = new THREE.Color(PALETTE.ground);
-    const hi = new THREE.Color(PALETTE.groundHi);
+    // Grass in the camp, cold rock in a basin.
+    const lo = new THREE.Color(isCamp ? 0x3f5230 : PALETTE.ground);
+    const hi = new THREE.Color(isCamp ? 0x59703c : PALETTE.groundHi);
     const c = new THREE.Color();
     for (let i = 0; i < pos.count; i++) {
       const x = pos.getX(i);
@@ -140,10 +162,135 @@ export function createRenderer(canvas, sim) {
 
   const terrainHeight = (x, z) => sim.world.heightAt(x / CELL + GRID / 2, z / CELL + GRID / 2);
 
-  // ---- rock spires (one instanced mesh for every blocked cell) -------------
+  // ---- what a blocked cell LOOKS like --------------------------------------
+  // A basin has one answer: a rock spire. The camp has four, and it needs them —
+  // built without this, its cabins drew as rock, its treeline drew as rock, and
+  // its dirt path drew as nothing, so the whole map read as a rocky clearing and
+  // a player who pressed "Learn the walk" believed the tutorial had not loaded.
+  // Every geometry test passed the whole time; none of them can see.
+  //
+  // `cellKind` is camp-only. A world without it takes the original path below,
+  // unchanged.
+  const KIND = { NONE: 0, CABIN: 1, TREELINE: 2, WOOD: 3, PATH: 4 };
+  const kindAt = (cx, cz) => (sim.world.cellKind ? sim.world.cellKind[cz * GRID + cx] : KIND.NONE);
+  const isSpire = (cx, cz) => {
+    const i = cz * GRID + cx;
+    if (!sim.world.blocked[i]) return false;
+    return kindAt(cx, cz) === KIND.NONE;   // anything tagged draws as itself
+  };
+
+  if (sim.world.cellKind) buildCampScenery();
+
+  /** Cabins, trees and a dirt path — the camp's own vocabulary. */
+  function buildCampScenery() {
+    const timber = new THREE.MeshStandardMaterial({ color: 0x4a3a2c, roughness: 0.95, flatShading: true });
+    const roof = new THREE.MeshStandardMaterial({ color: 0x2e2620, roughness: 1, flatShading: true });
+    const trunkMat = new THREE.MeshStandardMaterial({ color: PALETTE.treeTrunk, roughness: 0.9 });
+    const leafMat = new THREE.MeshStandardMaterial({ color: PALETTE.treeLeaf, roughness: 0.85, flatShading: true });
+    // Well lighter than the grass. At 0x50432f the path was technically drawn
+    // and read as a slightly different green — a path you cannot see is not a path.
+    const dirtMat = new THREE.MeshStandardMaterial({ color: 0x9c7f55, roughness: 1 });
+
+    // CABINS. One box per tagged cell would read as a wall of cubes, so
+    // contiguous runs are merged into a single building per rectangle and only
+    // the run's first cell places geometry.
+    const seen = new Uint8Array(GRID * GRID);
+    for (let cz = 0; cz < GRID; cz++) {
+      for (let cx = 0; cx < GRID; cx++) {
+        if (kindAt(cx, cz) !== KIND.CABIN || seen[cz * GRID + cx]) continue;
+        let x1 = cx; while (x1 + 1 < GRID && kindAt(x1 + 1, cz) === KIND.CABIN) x1++;
+        let z1 = cz;
+        outer: while (z1 + 1 < GRID) {
+          for (let x = cx; x <= x1; x++) if (kindAt(x, z1 + 1) !== KIND.CABIN) break outer;
+          z1++;
+        }
+        for (let z = cz; z <= z1; z++) for (let x = cx; x <= x1; x++) seen[z * GRID + x] = 1;
+
+        const a = cellToWorld(cx, cz), b = cellToWorld(x1, z1);
+        const w = Math.abs(b.x - a.x) + CELL, d = Math.abs(b.z - a.z) + CELL;
+        const mx = (a.x + b.x) / 2, mz = (a.z + b.z) / 2;
+        const ground = terrainHeight(mx, mz);
+        const H = 3.2;
+        const walls = new THREE.Mesh(new THREE.BoxGeometry(w * 0.92, H, d * 0.92), timber);
+        walls.position.set(mx, ground + H / 2, mz);
+        scene.add(walls);
+        // A pitched roof, so it reads as a building rather than a crate.
+        const cap = new THREE.Mesh(new THREE.ConeGeometry(Math.max(w, d) * 0.72, 1.9, 4), roof);
+        cap.position.set(mx, ground + H + 0.85, mz);
+        cap.rotation.y = Math.PI / 4;
+        scene.add(cap);
+      }
+    }
+
+    // TREES, for the perimeter wall and the thin wood inside it. Instanced —
+    // there are over a thousand.
+    let treeCount = 0;
+    for (let i = 0; i < sim.world.cellKind.length; i++) {
+      const k = sim.world.cellKind[i];
+      if (k === KIND.TREELINE || k === KIND.WOOD) treeCount++;
+    }
+    const trunks = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.22, 0.32, 3.4, 5), trunkMat, treeCount);
+    const crowns = new THREE.InstancedMesh(new THREE.ConeGeometry(1.5, 4.4, 6), leafMat, treeCount);
+    const m = new THREE.Matrix4(), q = new THREE.Quaternion();
+    let n = 0;
+    for (let cz = 0; cz < GRID; cz++) {
+      for (let cx = 0; cx < GRID; cx++) {
+        const k = kindAt(cx, cz);
+        if (k !== KIND.TREELINE && k !== KIND.WOOD) continue;
+        const { x, z } = cellToWorld(cx, cz);
+        // Deterministic jitter from the cell index — the same camp every time,
+        // without touching the sim's rng.
+        const j = ((cx * 73856093) ^ (cz * 19349663)) >>> 0;
+        const ox = (((j % 100) / 100) - 0.5) * CELL * 0.55;
+        const oz = ((((j >>> 8) % 100) / 100) - 0.5) * CELL * 0.55;
+        const h = 0.82 + ((j >>> 16) % 100) / 100 * 0.7;
+        const g = terrainHeight(x + ox, z + oz);
+        q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), ((j >>> 5) % 360) * (Math.PI / 180));
+        m.compose(new THREE.Vector3(x + ox, g + 1.7 * h, z + oz), q, new THREE.Vector3(h, h, h));
+        trunks.setMatrixAt(n, m);
+        m.compose(new THREE.Vector3(x + ox, g + (3.4 + 2.2) * h, z + oz), q, new THREE.Vector3(h, h, h));
+        crowns.setMatrixAt(n, m);
+        n++;
+      }
+    }
+    trunks.instanceMatrix.needsUpdate = true;
+    crowns.instanceMatrix.needsUpdate = true;
+    scene.add(trunks, crowns);
+
+    // THE PATH. Flat quads just above the ground, so the route through the camp
+    // is legible as a route.
+    const pathGeo = new THREE.PlaneGeometry(CELL, CELL);
+    let pathCount = 0;
+    for (let i = 0; i < sim.world.cellKind.length; i++) if (sim.world.cellKind[i] === KIND.PATH) pathCount++;
+    const dirt = new THREE.InstancedMesh(pathGeo, dirtMat, pathCount);
+    let pn = 0;
+    for (let cz = 0; cz < GRID; cz++) {
+      for (let cx = 0; cx < GRID; cx++) {
+        if (kindAt(cx, cz) !== KIND.PATH) continue;
+        const { x, z } = cellToWorld(cx, cz);
+        m.makeRotationX(-Math.PI / 2);
+        // Sample the cell's CORNERS and clear the highest of them. Placing the
+        // quad at the cell-centre height buried it: the ground is an
+        // interpolated vertex-coloured plane, so between grid vertices the real
+        // surface can sit well above the centre sample, and the path vanished
+        // under the grass in exactly the places the ground rose.
+        const h = Math.max(
+          terrainHeight(x - CELL / 2, z - CELL / 2), terrainHeight(x + CELL / 2, z - CELL / 2),
+          terrainHeight(x - CELL / 2, z + CELL / 2), terrainHeight(x + CELL / 2, z + CELL / 2),
+          terrainHeight(x, z),
+        );
+        m.setPosition(x, h + 0.06, z);
+        dirt.setMatrixAt(pn++, m);
+      }
+    }
+    dirt.instanceMatrix.needsUpdate = true;
+    scene.add(dirt);
+  }
+
+  // ---- rock spires (one instanced mesh for every UNTAGGED blocked cell) -----
   {
     let count = 0;
-    for (let i = 0; i < sim.world.blocked.length; i++) if (sim.world.blocked[i]) count++;
+    for (let cz = 0; cz < GRID; cz++) for (let cx = 0; cx < GRID; cx++) if (isSpire(cx, cz)) count++;
     const rocks = new THREE.InstancedMesh(
       new THREE.ConeGeometry(CELL * 0.72, 1, 6),
       new THREE.MeshStandardMaterial({ color: PALETTE.rock, roughness: 1, flatShading: true }),
@@ -154,7 +301,7 @@ export function createRenderer(canvas, sim) {
     let n = 0;
     for (let cz = 0; cz < GRID; cz++) {
       for (let cx = 0; cx < GRID; cx++) {
-        if (!sim.world.blocked[cz * GRID + cx]) continue;
+        if (!isSpire(cx, cz)) continue;
         const { x, z } = cellToWorld(cx, cz);
         // Deterministic pseudo-variation from the cell index — no rng needed, and
         // it stays identical across reloads of the same seed.
@@ -289,24 +436,98 @@ export function createRenderer(canvas, sim) {
     return g;
   }
 
-  function makeFigure() {
+  // FIVE DISTINCT BUILDS, one per roster slot. Every companion was the same
+  // capsule in the same colour, so at any distance past a few metres the party
+  // was five identical grey shapes and "who is that over there" had no answer.
+  //
+  // Silhouette carries the difference, not colour — heights, widths, a pack, a
+  // hood. brain: the-game-the-recursion#E12 found two independently-authored
+  // entity palettes landing on the red-green confusion axis at nearly identical
+  // luminance, where only the silhouettes separated them. So the shapes differ
+  // first and the tints are a secondary cue, checked for luminance spread — the
+  // first pass put slots 3 and 5 within 0.7 luminance of each other ON that
+  // axis, which is precisely E12's case, so slot 5 was darkened until every
+  // pair clears a real margin.
+  const BUILDS = [
+    { r: 0.34, h: 1.05, head: 0.25, tint: 0x8d97a8, pack: true,  hood: false }, // 1 broad, packed
+    { r: 0.27, h: 0.86, head: 0.22, tint: 0xb9a58c, pack: false, hood: false }, // 2 slight
+    { r: 0.33, h: 1.16, head: 0.24, tint: 0x7f8d84, pack: false, hood: true  }, // 3 tall, hooded
+    { r: 0.30, h: 0.78, head: 0.26, tint: 0xa89aa6, pack: true,  hood: false }, // 4 short, packed
+    { r: 0.36, h: 0.98, head: 0.23, tint: 0x6a5f4a, pack: false, hood: false }, // 5 stocky
+  ];
+
+  function makeFigure(item) {
     const g = new THREE.Group();
-    const mat = new THREE.MeshStandardMaterial({ color: PALETTE.body, roughness: 0.8 });
-    const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.32, 0.95, 6, 10), mat);
-    body.position.y = 1.05;
+    // `index` is 1-based on companions and 0 on the lead; a phantom has none, so
+    // it falls through to slot 0's build and reads as a real member — which is
+    // the point of a phantom.
+    const b = BUILDS[Math.max(0, ((item?.index ?? 1) - 1)) % BUILDS.length];
+    const mat = new THREE.MeshStandardMaterial({ color: b.tint, roughness: 0.8 });
+    const body = new THREE.Mesh(new THREE.CapsuleGeometry(b.r, b.h, 6, 10), mat);
+    body.position.y = 0.55 + b.h / 2;
     g.add(body);
-    const head = new THREE.Mesh(new THREE.SphereGeometry(0.24, 12, 10), mat);
-    head.position.y = 1.86;
+    const head = new THREE.Mesh(new THREE.SphereGeometry(b.head, 12, 10), mat);
+    head.position.y = 0.55 + b.h + b.head * 1.3;
     g.add(head);
+    if (b.hood) {
+      const hood = new THREE.Mesh(new THREE.ConeGeometry(b.head * 1.5, b.head * 2.1, 7), mat);
+      hood.position.y = head.position.y + b.head * 0.5;
+      g.add(hood);
+    }
+    if (b.pack) {
+      const pack = new THREE.Mesh(new THREE.BoxGeometry(b.r * 1.5, b.h * 0.7, b.r * 0.9), mat);
+      pack.position.set(0, 0.55 + b.h * 0.55, -b.r * 1.1);
+      g.add(pack);
+    }
     const light = new THREE.Mesh(
       new THREE.SphereGeometry(0.11, 8, 8),
       new THREE.MeshBasicMaterial({ color: 0xffd9a0 }),
     );
-    light.position.set(0.3, 1.3, 0.22);
+    light.position.set(b.r * 0.9, 0.55 + b.h * 0.75, 0.22);
     g.add(light);
-    g.userData = { mat, light, bob: Math.random() * 6.283, lastX: 0, lastZ: 0 };
+    g.userData = { mat, light, tint: b.tint, bob: Math.random() * 6.283, lastX: 0, lastZ: 0 };
     scene.add(g);
     return g;
+  }
+
+  /**
+   * A marker over the trainer, so "walk over to him" names somebody you can
+   * pick out. Without it the objective points at one of six identical figures
+   * standing in a field and the player has to guess which.
+   *
+   * Deliberately DIEGETIC-ish and camp-only: a lantern on a pole, not a
+   * floating waypoint arrow. It is a thing at a place, which is the same
+   * grammar as everything else in this game, and it never appears in a basin.
+   */
+  let trainerMark = null;
+  function ensureTrainerMark(at) {
+    if (!at) { if (trainerMark) trainerMark.visible = false; return; }
+    if (!trainerMark) {
+      const g = new THREE.Group();
+      const pole = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.07, 0.09, 3.2, 6),
+        new THREE.MeshStandardMaterial({ color: 0x3a3128, roughness: 0.9 }),
+      );
+      pole.position.y = 1.6;
+      g.add(pole);
+      const lamp = new THREE.Mesh(
+        new THREE.OctahedronGeometry(0.3, 0),
+        new THREE.MeshBasicMaterial({ color: 0xffd489 }),
+      );
+      lamp.position.y = 3.25;
+      g.add(lamp);
+      const glow = new THREE.PointLight(0xffc879, 1.6, 16, 2);
+      glow.position.y = 3.25;
+      g.add(glow);
+      g.userData.lamp = lamp;
+      scene.add(g);
+      trainerMark = g;
+    }
+    trainerMark.visible = true;
+    trainerMark.position.set(at.x, terrainHeight(at.x, at.z), at.z);
+    // A slow pulse, so it reads as lit rather than as a decal.
+    const t = performance.now() / 1000;
+    trainerMark.userData.lamp.scale.setScalar(1 + Math.sin(t * 1.7) * 0.12);
   }
 
   function makeItem() {
@@ -372,7 +593,9 @@ export function createRenderer(canvas, sim) {
       seen.add(item.id);
       let obj = map.get(item.id);
       if (!obj) {
-        obj = factory();
+        // The ITEM is passed so a factory can vary by whose it is. makeFigure
+        // needs it to pick a build per roster slot; the others ignore it.
+        obj = factory(item);
         map.set(item.id, obj);
       }
       obj.visible = true;
@@ -435,10 +658,17 @@ export function createRenderer(canvas, sim) {
     camera.updateProjectionMatrix();
 
     // ---- fog / colour drift ----
-    tmpColor.set(PALETTE.fog).lerp(new THREE.Color(PALETTE.fogLost), dis);
+    // PER FRAME, from the basin palette — which silently undid the camp's
+    // daylight every single frame. Setting the fog once at build time was not
+    // enough; anything set at build must also be respected here or it lasts
+    // exactly one frame. The camp still drifts as the lead goes, just from its
+    // own colours and its own baseline density.
+    const baseFog = isCamp ? 0x8fa2b4 : PALETTE.fog;
+    const baseDensity = isCamp ? 0.006 : 0.014;
+    tmpColor.set(baseFog).lerp(new THREE.Color(PALETTE.fogLost), dis);
     scene.fog.color.copy(tmpColor);
     scene.background = tmpColor;
-    scene.fog.density = 0.014 + dis * 0.018; // the basin closes in as the lead goes
+    scene.fog.density = baseDensity + dis * 0.018; // it closes in as the lead goes
     lamp.intensity = 1.9 - dis * 0.6;
 
     // ---- markers ----
@@ -497,6 +727,9 @@ export function createRenderer(canvas, sim) {
       const s = obj.userData.item;
       obj.position.set(s.x, terrainHeight(s.x, s.z), s.z);
     }
+
+    // The trainer's lantern. Camp only — `sim.trainer` exists nowhere else.
+    ensureTrainerMark(sim.trainer && !sim.reachedTrainer ? sim.trainer : null);
 
     // ---- companions (real and otherwise) ----
     syncPool(pool.figures, perceivedCompanions(percept, sim), makeFigure);

@@ -4,18 +4,20 @@
 import {
   createRun, tick, debrief, logMarker, checkIn, useDose, pickupItem, useItem, dropItem, craftItem, gatherTarget, offerItem,
   possess, release, possessableCompanions, activatePylon, pylonAt,
+  callCompanion, clearMoss, mossedAt,
   PARTY_SIZE, DIFFICULTY, LOG_RADIUS, PYLON_RADIUS, ITEM_CAP, ITEM_PICKUP_RADIUS, CAMPAIGN_LENGTH, ITEM_INFO,
-} from "./state.js?v=mirage-0.11.2";
-import { STAGES, applyStage, observe, objectiveText, stageById } from "./tutorial.js?v=mirage-0.11.2";
-import { createPercept, updatePercept, distortion, perceivedMonoliths, believedKinds } from "./percept.js?v=mirage-0.11.2";
-import { createRenderer } from "./render.js?v=mirage-0.11.2";
-import { createHud, renderDebrief, paintHint } from "./hud.js?v=mirage-0.11.2";
-import { createInput, ACTIONS } from "./input.js?v=mirage-0.11.2";
-import { createAudio } from "./audio.js?v=mirage-0.11.2";
-import { hashSeed } from "./rng.js?v=mirage-0.11.2";
-import { saveRun, loadSave, clearSave, deserializeRun, describeSave, loadSettings, saveSettings } from "./save.js?v=mirage-0.11.2";
+} from "./state.js?v=mirage-0.13.2";
+import { STAGES, openObjective, checkTrainer, observe, objectiveText, stageById } from "./tutorial.js?v=mirage-0.13.2";
+import { buildCamp, CAMP_SEED } from "./camp.js?v=mirage-0.13.2";
+import { createPercept, updatePercept, distortion, perceivedMonoliths, believedKinds } from "./percept.js?v=mirage-0.13.2";
+import { createRenderer } from "./render.js?v=mirage-0.13.2";
+import { createHud, renderDebrief, paintHint } from "./hud.js?v=mirage-0.13.2";
+import { createInput, ACTIONS } from "./input.js?v=mirage-0.13.2";
+import { createAudio } from "./audio.js?v=mirage-0.13.2";
+import { hashSeed } from "./rng.js?v=mirage-0.13.2";
+import { saveRun, loadSave, clearSave, deserializeRun, describeSave, loadSettings, saveSettings } from "./save.js?v=mirage-0.13.2";
 
-const BUILD = "mirage-0.11.2";
+const BUILD = "mirage-0.13.2";
 
 const el = (id) => document.getElementById(id);
 const canvas = el("gl");
@@ -39,7 +41,7 @@ let saveTimer = 0;
 // Horizontal field of view in degrees, from stored preferences. Applied to
 // each renderer as it is built, since a run can start before the pause menu
 // has ever been opened.
-let fovPref = 90;
+let fovPref = 78;
 // Sim-seconds between autosaves. Short enough that a closed tab costs little,
 // long enough that a serialise is nowhere near a per-frame cost.
 const AUTOSAVE_EVERY = 5;
@@ -206,20 +208,63 @@ function refreshLearnLabel() {
   const p = tutorialProgress();
   const n = p.done.length;
   d.textContent = n === 0 ? "" : n >= STAGES.length ? " · done" : ` · ${n}/${STAGES.length}`;
+  // Loud until it has been finished, then it steps back. A player who has never
+  // done the walk in should not have to notice a quiet button underneath a loud
+  // one to find out the game has a tutorial at all.
+  el("learnBtn")?.classList.toggle("quiet", n >= STAGES.length);
 }
 
-function startStage(index) {
-  const stage = STAGES[index];
-  if (!stage) { tut = null; screens("title"); return null; }
-  const sim = createRun({ seed: 7000 + index, difficulty: "gentle", level: 1, campaignLength: 1 });
-  applyStage(sim, stage);
-  tut = { stage, index, done: false, startX: sim.player.x, startZ: sim.player.z };
-  const r = mountRun(sim, stage.brief);
-  setObjective(`${index + 1}/${STAGES.length}  ${stage.title}`, stage.brief);
-  // The companion line lands a beat later so it reads as somebody speaking
-  // rather than as a second caption on the same frame.
-  if (stage.line) setTimeout(() => run && hudSay(`${sim.companions[stage.line.who - 1].name}: ${stage.line.text}`), 1200);
+/**
+ * Start the walk in: ONE run, on the camp, from objective `index`.
+ *
+ * The old shape built a fresh basin per stage and tore it down on completion,
+ * so nothing persisted and nowhere was anywhere. This mounts the camp once;
+ * `openObjective` then opens each objective around a player who never leaves.
+ */
+function startTutorial(index = 0) {
+  const obj = STAGES[index];
+  if (!obj) { tut = null; screens("title"); return null; }
+  const world = buildCamp();
+  const sim = createRun({ seed: CAMP_SEED, difficulty: "gentle", level: 1, campaignLength: 1, world });
+  // Nobody decays while they are being taught. Time still moves, so the call
+  // cadences still recharge — see state.js noDrain.
+  sim.noDrain = true;
+  sim.canClearMoss = false;
+  sim.callUnlocked = false;
+  sim.trainer = world.trainer;
+  campParty(sim, world);
+  const r = mountRun(sim, obj.brief);
+  tut = { index, stage: obj, done: false, beats: [] };
+  enterObjective(index, sim);
   return r;
+}
+
+/**
+ * Place everybody for the camp: the trainer where the map says, the rest
+ * standing around the yard. Nobody follows during the walk in — canonically
+ * they finished their own training yesterday — so they are simply here.
+ */
+function campParty(sim, world) {
+  const yard = world.camp;
+  sim.companions.forEach((c, i) => {
+    const a = (i / sim.companions.length) * Math.PI * 2;
+    c.x = yard.x + Math.cos(a) * 6 + 14;
+    c.z = yard.z + Math.sin(a) * 6;
+    c.wanderUntil = Infinity;   // stand still; the walk in is not about them moving
+    c.pingAt = Infinity;
+  });
+  sim.player.x = world.spawn.x;
+  sim.player.z = world.spawn.z;
+}
+
+/** Open objective `index` in the run already on screen. */
+function enterObjective(index, sim = run.sim) {
+  const obj = STAGES[index];
+  if (!obj) return;
+  tut = { index, stage: obj, done: false, beats: [] };
+  openObjective(sim, obj);
+  setObjective(`${index + 1}/${STAGES.length}  ${obj.title}`, obj.brief);
+  if (obj.line) setTimeout(() => run && hudSay(`${sim.companions[obj.line.who - 1].name}: ${obj.line.text}`), 1200);
 }
 
 function setObjective(title, text) {
@@ -233,7 +278,7 @@ function setObjective(title, text) {
 
 function hudSay(text) { run?.hud.say(text, ""); }
 
-/** A stage's step just fired: show its debrief, then move on. */
+/** An objective's step just fired: show its debrief, then open the next one. */
 function completeStage() {
   if (!tut || tut.done) return;
   tut.done = true;
@@ -249,7 +294,9 @@ function completeStage() {
     if (!tut) return;
     const next = index + 1;
     if (next >= STAGES.length) { tut = null; setObjective(null); screens("title"); return; }
-    startStage(next);
+    // NO REMOUNT. The same run, the same camp, the same player standing where
+    // they were left — only the objective changes.
+    enterObjective(next);
   }, 4200);
 }
 
@@ -283,6 +330,16 @@ function resumeRun() {
 
 /** Everything a run needs on screen, shared by a fresh start and a resume. */
 function mountRun(sim, openingLine) {
+  // DROP THE PREVIOUS RUN'S RENDERER FIRST.
+  //
+  // Every mount builds a fresh scene, a fresh geometry set and a fresh WebGL
+  // context on the same canvas. advanceLevel already disposed the outgoing one
+  // when moving basin to basin; this path — title -> run -> title -> run, and
+  // every tutorial start — never did, so a session that bounced in and out of
+  // the menu a few times stacked live contexts on one canvas. Browsers hard-cap
+  // those and start discarding the OLDEST, which presents as a black screen
+  // with nothing in the console.
+  run?.renderer?.dispose?.();
   const seedValue = sim.seed;
   const percept = createPercept(sim.player);
   const renderer = createRenderer(canvas, sim);
@@ -297,6 +354,9 @@ function mountRun(sim, openingLine) {
   el("seedLabel").textContent = `seed ${seedValue}`;
   screens("hudLayer");
   audio.start();
+  // The camp is a wood in daylight; a basin is a fogged plain. Crossfaded, not
+  // switched — see audio.js setBiome.
+  audio.setBiome(sim.world.cellKind ? 1 : 0);
   // A controller player has no use for mouse pointer lock — their look comes
   // from the right stick regardless of lock state — and requesting it here
   // would either no-op or flash a browser permission prompt for nothing.
@@ -454,6 +514,19 @@ function handleAction(action, arg, player = run.players[0]) {
       // visible and that silence would be a perfect lucidity readout. So the
       // press always LANDS — same line, same sound — and the difference shows
       // up as nobody ever joining you.
+      // Moss first: a crusted pylon is not a pylon yet, and pylonAt hides it
+      // deliberately. Pressing the verb on one gives a real in-fiction answer
+      // either way — it comes off, or it will not shift — which is what makes
+      // this a gate on the WORLD rather than a guard on the input.
+      const mossy = mossedAt(sim, actor);
+      if (mossy) {
+        const mres = clearMoss(sim, mossy, actor);
+        audio.play(mres.ok ? "recover" : "deny");
+        hud.say(mres.ok
+          ? "The moss comes away. Whatever this is, it is still live."
+          : "Moss has grown right over it. It will not shift.", mres.ok ? "good" : "warn");
+        break;
+      }
       const believedPylon = pylonAt(sim, actor) || nearestBelievedPylon(sim, percept, actor);
       if (believedPylon) {
         const ares = activatePylon(sim, actor);
@@ -478,6 +551,21 @@ function handleAction(action, arg, player = run.players[0]) {
       } else {
         audio.play(res.real ? "log" : "logFalse");
       }
+      break;
+    }
+    case ACTIONS.CALL: {
+      // Locked until the walk in teaches it, and only there — a basin run sets
+      // callUnlocked at construction. Gated by ABSENCE of the verb rather than
+      // by a silent refusal so the tutorial never has to intercept an input.
+      if (sim.callUnlocked === false) break;
+      const target = sim.companions[player.selected];
+      if (!target) break;
+      const cres = callCompanion(sim, target.id, actor);
+      // Only the cadences refuse, and a refusal is silent and free. There is no
+      // "nobody answered" line and there never will be: that would report the
+      // hidden meter through an error string. The call sounds the same whether
+      // or not anybody is coming; what differs is whether anybody arrives.
+      if (cres.ok) audio.play("log");
       break;
     }
     case ACTIONS.CHECK_IN: {
@@ -750,6 +838,10 @@ function step(dt, intent) {
   }
 
   tick(sim, dt, { move, run: intent.run, yaw, interact: intent.interact, others });
+  // The camp's one place-based objective. Emits once, into the same merged
+  // stream the observer reads, so "walk to the trainer" is an ordinary event
+  // like any other rather than a special case inside the overlay.
+  if (tut && sim.trainer) checkTrainer(sim, (s2, kind, text, opts) => sim.events.push({ ...opts, kind, text, t: s2.time }));
   const events = actionEvents.concat(sim.events);
 
   // THE observer hook. It has to be here and nowhere else: `sim.events` alone
@@ -769,6 +861,17 @@ function step(dt, intent) {
     // `tut` is the one object that lives for exactly as long as the stage does,
     // which makes it the only correct home for a multi-target step's running
     // tally — `p` is rebuilt from localStorage every frame (see observe).
+    // BEATS — mid-objective moments that are not completions. The pylon
+    // objective needs one: clearing the moss is not finishing it, it is the
+    // point where the trainer casts doubt and hands you the verb that answers
+    // him. Each beat fires at most once, latched on `tut.beats`.
+    for (const beat of tut.stage.beats || []) {
+      if (tut.beats.includes(beat.on)) continue;
+      if (!seen.some((ev) => ev.kind === beat.on)) continue;
+      tut.beats.push(beat.on);
+      if (beat.opens) openObjective(sim, { opens: beat.opens });
+      if (beat.say) hudSay(beat.say);
+    }
     if (observe(p, tut.stage, seen, sim, tut)) completeStage();
   }
   for (const p of run.players) {
@@ -956,7 +1059,7 @@ function boot() {
     const p = tutorialProgress();
     // Resume where they stopped; a finished tutorial restarts from the top
     // rather than refusing, because these are worth replaying.
-    startStage(p.current >= STAGES.length ? 0 : p.current);
+    startTutorial(p.current >= STAGES.length ? 0 : p.current);
   });
   el("howBtn").addEventListener("click", () => el("howto").classList.toggle("hidden"));
   el("resumeBtn").addEventListener("click", togglePause);
@@ -1032,7 +1135,8 @@ if (typeof window !== "undefined") {
      * layer the CSS-pixel figure a real device would report at that scaling. */
     debugMouseLook(dx, dy) { return input.debugLook(dx, dy); },
     /** Start a tutorial stage by index — the same path the title button takes. */
-    startStage(i) { return startStage(i); },
+    startStage(i) { return startTutorial(i); },
+    enterObjective(i) { return enterObjective(i); },
     /** Which stages are recorded done, for the browser tutorial test. */
     tutorialDone() { return tutorialProgress().done.slice(); },
     /** Drive the menu grid down one row — for testing focus over a changing menu. */

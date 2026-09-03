@@ -8,7 +8,7 @@
 // who lags, who starts narrating things that aren't there. Each rule below exists
 // to make an internal number legible from the outside without printing it.
 
-import { findPath, worldToCell, cellToWorld, moveWithCollision, isBlockedAt, CELL, GRID } from "./world.js?v=mirage-0.11.2";
+import { findPath, worldToCell, cellToWorld, moveWithCollision, isBlockedAt, CELL, GRID } from "./world.js?v=mirage-0.13.2";
 import {
   BAND,
   bandOf,
@@ -21,7 +21,9 @@ import {
   companionPickup,
   handoffToPlayer,
   activatePylon,
-} from "./state.js?v=mirage-0.11.2";
+  updatePing, isAnswering, isReturning,
+  PRIME_WINDOW,
+} from "./state.js?v=mirage-0.13.2";
 
 // Higher band = worse. Lets a per-companion trait move the pylon-seeking
 // trigger EARLIER than the uniform BRITTLE tell everyone else gets, without
@@ -94,7 +96,13 @@ const KNOWN_PYLON_DIST = 24; // how close they must have been to remember a pylo
 const SEEK_PYLON_DIST = 70; // and how far they will then travel back to one
 const REPATH_INTERVAL = 0.9; // seconds between path recomputes
 const SEEK_ITEM_DIST = 55; // how far an idle companion will travel on a fetch errand
-const PYLON_RETRY = 90; // seconds before a companion will try an abandoned pylon again
+const PYLON_RETRY = 90;
+
+// Ambient wandering, the default state of anybody nobody is talking to.
+const WANDER_NEAR = 4;        // never pick somewhere they are already standing
+const WANDER_SPREAD = 14;     // ...scaled by the companion's own `wander` trait
+const WANDER_DWELL_MIN = 4;   // seconds before choosing somewhere new
+const WANDER_DWELL_MAX = 11; // seconds before a companion will try an abandoned pylon again
 
 // --- what "gone" looks like from the outside ---------------------------------
 // A companion's hallucination is only a tell if the lead can SEE it. The
@@ -435,6 +443,40 @@ export function updateCompanions(sim, dt) {
 
     const band = bandOf(c.lucidity);
 
+    // PER-TICK BOOKKEEPING, NOT A BRANCH OUTCOME. This has to run for every
+    // companion every tick, before anything below can `continue` past it. It
+    // sat inside the wander branch first, which meant a companion busy at a
+    // pylon or on an errand never advanced their ping clock at all: `pingAt`
+    // went stale behind them, and the moment they left that branch it was
+    // already overdue and fired instantly. That made behaviour depend on which
+    // branches a companion had happened to take, which is precisely the kind of
+    // hidden history a save cannot carry — the divergence test caught it as a
+    // resumed run forking four seconds in.
+    updatePing(sim, c);
+
+    // THREE DRAWS, EVERY COMPANION, EVERY TICK, WHATEVER BRANCH THEY TAKE.
+    // brain: waiting-city#E9 (constant roll count), and the same discipline
+    // tickLucidity states one file over: "if a value is only USED on one
+    // branch, it still has to be DRAWN on all of them."
+    //
+    // These are the ambient-wander values, used only when a companion is on
+    // their own business and their dwell has run out. Drawing them there —
+    // inside the branch, only when needed — is what broke the resume: a
+    // companion busy at a pylon skipped the draws, so the number of draws in a
+    // tick depended on which branch each of five companions happened to be in,
+    // and a resumed run that differed by one branch entry re-perturbed every
+    // mind sharing that tick. The divergence test caught it as a fork four
+    // seconds after restore, and the draw count differed by exactly three.
+    //
+    // Drawing unconditionally costs three rng calls per companion per tick and
+    // makes the stream position a function of TIME ALONE, which is the only
+    // form a save can carry.
+    const wanderRoll = {
+      angle: sim.rng.float(0, Math.PI * 2),
+      reach: sim.rng.float(0, 1),
+      dwell: sim.rng.float(WANDER_DWELL_MIN, WANDER_DWELL_MAX),
+    };
+
     // BRITTLE is the loud, uniform tell: everyone breaks formation for a
     // remembered pylon by then, whether or not you were planning to go
     // there. A companion with a high selfCare trait acts on that same signal
@@ -548,7 +590,12 @@ export function updateCompanions(sim, dt) {
     // like a party that scatters, even when everyone is in fact back on
     // station. Latched on the goalKind transition so it fires once per
     // absence, and only for absences the lead could have noticed.
-    if (c.goalKind && c.goalKind !== "follow" && c.goalKind !== "resting") {
+    // "Away" means away on SOMETHING — a pylon, an errand, a broken mind. The
+    // ambient states do not count, or the latch is set every tick for everyone
+    // and "X comes back over" fires forever. This used to exclude "follow"; the
+    // default is "wander" now, and leaving the old exclusion in place made
+    // every companion permanently, silently away.
+    if (c.goalKind && !["follow", "wander", "resting", "regrouping"].includes(c.goalKind)) {
       c.wasAway = c.goalKind;
     }
     // Somebody in the party has set hands on a pylon and is waiting for a
@@ -562,7 +609,7 @@ export function updateCompanions(sim, dt) {
         !p.spent &&
         p.primedBy?.length &&
         !p.primedBy.includes(c.id) &&
-        sim.time - p.primedAt <= 14 &&
+        sim.time - p.primedAt <= PRIME_WINDOW &&
         dist(p, c) <= PYLON_RADIUS,
     );
     if (waiting) {
@@ -571,23 +618,59 @@ export function updateCompanions(sim, dt) {
       continue;
     }
 
-    c.goalKind = "follow";
-    const slot = formationSlot(sim, c);
-    const d = dist(c, slot);
-    if (c.wasAway && d <= FOLLOW_SLACK * 2.5) {
-      const how = c.wasAway === "hallucinating" ? `${c.name} is back with us.` : `${c.name} falls back into formation.`;
-      c.wasAway = null;
-      emit(sim, "break", how, { who: c.id });
+    // ---- coming to you ---------------------------------------------------
+    // Following is GONE. Five people walking in your pocket reads as an escort,
+    // not a crew, and it makes "am I alone out here" impossible to feel because
+    // you never are. What replaces it is two impulses, both with deadlines:
+    // somebody you CALLED, and somebody the periodic ping turned around.
+    //
+    // Both are impulses, never restoring forces (brain: dog#E41 — a cluster
+    // driven by balanced inflow and outflow reaches a fixed point and freezes
+    // there). When the deadline passes they stop where they are and go back to
+    // their own business, wherever that has left them.
+    const summoned = isAnswering(sim, c);
+    if (summoned || isReturning(sim, c)) {
+      c.goalKind = summoned ? "answering" : "regrouping";
+      const d = dist(c, sim.player);
+      if (c.wasAway && d <= FOLLOW_SLACK * 2.5) {
+        const how = c.wasAway === "hallucinating" ? `${c.name} is back with us.` : `${c.name} comes back over.`;
+        c.wasAway = null;
+        emit(sim, "break", how, { who: c.id });
+      }
+      // Close enough. A called companion who has arrived stops being called —
+      // otherwise they stand pressed against the lead for the rest of the
+      // window, which is the leash again by another name.
+      if (d <= FOLLOW_SLACK * 2) {
+        if (summoned) c.summonUntil = 0;
+        c.pingUntil = 0;
+        c.facing = Math.atan2(sim.player.x - c.x, sim.player.z - c.z);
+      } else {
+        stepToward(sim, c, sim.player, followSpeed(d, band), dt);
+      }
+      continue;
     }
-    if (d > FOLLOW_SLACK) {
-      // Fraying companions lag: the gap between them and the lead is the tell,
-      // and GRIP above is what makes that gap open at a rate you can read.
-      stepToward(sim, c, slot, followSpeed(d, band), dt);
-    } else {
-      // On station. Face where the lead faces, so a held formation reads as a
-      // formation and not as five people who happen to be standing near you.
-      c.facing = sim.player.heading ?? sim.player.yaw;
+
+    // ---- their own business ----------------------------------------------
+    // Nobody called, no ping is pulling them back. Before cohesion this branch
+    // was "follow", and removing following left NOTHING here — companions
+    // simply stopped, which read as five people frozen at whatever distance
+    // they happened to be. A crew that only ever moves when summoned is not a
+    // crew; the wandering is what makes the calling mean anything.
+    //
+    // A stroll, not a patrol: pick somewhere within reach, walk there, stand a
+    // moment, pick again. Radius scales with this companion's own `wander`
+    // trait, so the restless ones really do get further away and the homebodies
+    // stay close — one of the behavioural tells the player is meant to learn.
+    c.goalKind = "wander";
+    if (sim.time >= (c.wanderUntil || 0) || !c.wanderGoal) {
+      // Uses the values drawn unconditionally at the top of this iteration.
+      // Nothing here may call sim.rng.
+      const a = wanderRoll.angle;
+      const r = WANDER_NEAR + wanderRoll.reach * WANDER_SPREAD * (0.4 + c.wander);
+      c.wanderGoal = { x: c.x + Math.cos(a) * r, z: c.z + Math.sin(a) * r };
+      c.wanderUntil = sim.time + wanderRoll.dwell;
     }
+    if (dist(c, c.wanderGoal) > 1.2) stepToward(sim, c, c.wanderGoal, WALK_SPEED * 0.7, dt);
   }
 }
 

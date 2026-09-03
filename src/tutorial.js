@@ -52,29 +52,46 @@ export function outranks(verb) {
   return i <= 0 ? [] : VERB_PRIORITY.slice(0, i);
 }
 
-export const STAGES = Object.freeze([
+/**
+ * THE WALK IN — seven objectives, ONE session, ONE map.
+ *
+ * These used to be seven separate runs: each `startStage` built a fresh basin,
+ * wiped it, placed one thing and tore it down again on completion. Nothing
+ * persisted and nowhere was anywhere. Now the player spawns into the camp once
+ * and the objectives open in sequence around them, in a place that does not
+ * change.
+ *
+ * `opens` is what the objective makes exist or makes possible. Two different
+ * gates, deliberately (brain: wrong-sky#E8):
+ *
+ *   EXISTENCE-GATED — the items. An item lying on the ground before its
+ *   objective is an out-of-order pickup, which is exactly the accident the
+ *   pinning discipline exists to prevent. They do not spawn until asked for.
+ *
+ *   EFFECT-GATED — the pylons. They stand in the camp from the first frame
+ *   under moss: findable, rememberable, and inert with a reason you can read.
+ *   A player who wanders early meets one and learns where it is, which is worth
+ *   more than not meeting it at all.
+ */
+export const OBJECTIVES = Object.freeze([
   {
     id: "walk-in",
     title: "The walk in",
     verb: "move",
-    // Nothing to press. The stage exists so that five named people holding a
-    // formation and talking to each other is established BEFORE the party is
-    // established as a tool.
-    brief: "Walk with them. Look around. They will keep up.",
-    step: { id: "walked", on: "moved", target: null, minDistance: 30 },
-    debrief: "That is your party. You will learn to read them before you learn to read the basin.",
+    brief: "You are late. The trainer is waiting at the far end of the path — walk over to him.",
+    // A PLACE, not a distance. "Cover 30m" is satisfied by pacing in a circle
+    // and teaches nothing; walking the length of the camp to a person who is
+    // waiting for you teaches the map and introduces the man in one action.
+    step: { id: "reachedTrainer", on: "reachTrainer", target: "trainer" },
+    debrief: "Everyone else finished this yesterday. They are around here somewhere.",
   },
   {
     id: "ground",
     title: "What the ground gives",
     verb: "pickup",
-    brief: "PAO has found something. Take it.",
-    // Pinned to ONE item id placed by the stage, so picking up anything else —
-    // now or in a later stage — cannot satisfy it.
+    brief: "He has put something down for you. Take it.",
+    opens: { items: [{ id: "tut-item-a", kind: "flare", near: "trainer", dx: 3, dz: 2 }] },
     step: { id: "tookItem", on: "pickup", target: "tut-item-a" },
-    // A companion names the item, not the HUD. The seed this plants is
-    // collected in stage 7: information in this game arrives through people,
-    // and people can be wrong.
     line: { who: 5, text: "A flare, I think. Good for a dark stretch." },
     debrief: "Everything you know about that flare, you know because someone told you.",
   },
@@ -82,11 +99,8 @@ export const STAGES = Object.freeze([
     id: "craft",
     title: "Two things become one",
     verb: "craft",
-    brief: "Two of those make something better. Combine them.",
-    // Crafting has no entity to pin to — the recipe consumes two slots and
-    // produces a kind, not an id — so this pins to the RESULT KIND and the
-    // stage guarantees it is the only way to make one. Declared as an explicit
-    // exception so the pinning test can hold every other step to the strict rule.
+    brief: "There is a second piece by his feet. Two of those make something better — combine them.",
+    opens: { items: [{ id: "tut-item-b", kind: "tether", near: "trainer", dx: -2, dz: 3 }] },
     step: { id: "crafted", on: "craft", targetKind: "ember", target: null, kindPinned: true },
     debrief: "A recipe is a claim about two objects. Hold on to that.",
   },
@@ -94,13 +108,6 @@ export const STAGES = Object.freeze([
     id: "hands",
     title: "Hands",
     verb: "give",
-    // Names the AIMING step, not the key. `give` acts on the roster selection
-    // and has no direct-target form, so "give it to IREN" alone is an
-    // instruction a player cannot carry out — but spelling out a keybind here
-    // would duplicate the legend in prose that drifts the next time a binding
-    // moves, and it would be WRONG for whichever scheme the player is not on.
-    // The always-visible hint strip carries the keys
-    // (brain: the-game-the-answering-deep#E9); this says what to do with them.
     brief: "Pick IREN out on the roster, then hand it to her.",
     step: { id: "gave", on: "offerUsed", target: "c2" },
     debrief: "Things change hands. The person handing one to you believes something about it.",
@@ -109,34 +116,43 @@ export const STAGES = Object.freeze([
     id: "pylon",
     title: "The pylon takes two",
     verb: "pylon",
-    brief: "That is a pylon. Stand in it and set hands on it — then get someone to join you.",
-    step: { id: "firedPylon", on: "draw", target: "p0" },
-    debrief: "It only ever fires once, and it always takes two. Remember what it looked like when nobody joined.",
+    // TWO BEATS, ONE LESSON. Find the thing under the moss and clear it; then
+    // the trainer asks whether you are sure it is really there, and the answer
+    // is another pair of eyes. Teaching CALL here rather than in its own
+    // objective is the difference between learning a verb and needing one.
+    brief: "There is something out here under the moss. Find it and clear it off.",
+    opens: { canClearMoss: true },
+    step: { id: "firedPylon", on: "draw", target: null, kindPinned: true },
+    beats: [
+      {
+        on: "unmoss",
+        say: "TRAINER: A pylon. Or it looks like one. Are you sure it is there? Call someone over and find out.",
+        opens: { call: true },
+      },
+    ],
+    debrief: "It only ever fires once, and it always takes two. One pair of hands is a claim.",
   },
   {
     id: "ask",
     title: "Ask them",
     verb: "checkin",
-    // `check in` IS directly targetable — every name on the roster carries its
-    // own number — so this points at the numbers rather than at the selection
-    // cycle. Same rule as stage 4: say how to aim, let the legend say with what.
     brief: "Check in on HALDER, then on NKEM. Their numbers are beside their names.",
     step: { id: "askedBoth", on: "report", target: ["c3", "c4"] },
-    // The stage forces a check-in on someone who shades the truth and someone
-    // who does not, and never says which was which until the debrief. The
-    // player is not told a meter moved; they are shown two answers and what was
-    // actually true.
     debrief: "One of them told you what they wanted to be true. An answer is evidence, not fact.",
   },
   {
     id: "first-lie",
     title: "The first lie",
     verb: "survey",
-    brief: "There is a marker out there. Survey it.",
+    brief: "Something has gone wrong with the light. There is a marker out there — go and survey it.",
+    opens: { leadUnder: true },
     step: { id: "metTheLie", on: "logFalse", target: null, kindPinned: true },
     debrief: "It was never there. Someone standing with you would have said so.",
   },
 ]);
+
+/** Kept as the old name so nothing downstream has to care that these are objectives now. */
+export const STAGES = OBJECTIVES;
 
 /** Every verb a stage teaches, for the coverage assertion. */
 export const TAUGHT_VERBS = Object.freeze(STAGES.map((s) => s.verb));
@@ -247,81 +263,66 @@ export function leaks(text) {
  *    press a button. The one stage that needs a mind to go under puts it there
  *    directly rather than by waiting.
  */
-export function applyStage(sim, stage) {
-  // A clean slate: nothing discovered, nothing in reach, no clock pressure.
-  sim.time = 0;
-  sim.status = "playing";
-  for (const m of sim.monoliths) { m.discovered = false; m.logged = false; m.x += 4000; m.z += 4000; }
-  for (const it of sim.items) { it.discovered = false; it.taken = true; }
-  for (const t of sim.trees) { t.discovered = false; t.chopped = true; }
-  for (const st of sim.stones || []) { st.discovered = false; st.taken = true; }
-  for (const p of sim.pylons) { p.spent = true; p.primedBy = []; }
-  sim.inventory.length = 0;
+export function openObjective(sim, obj) {
+  if (!obj || !obj.opens) return sim;
+  const o = obj.opens;
 
-  const at = sim.player;
-  const near = (dx, dz) => ({ x: at.x + dx, z: at.z + dz });
-
-  switch (stage.id) {
-    case "walk-in":
-      // Nothing to press. Five people, a formation, and room to walk.
-      break;
-
-    case "ground": {
-      // ONE item, pinned by id, and no pylon anywhere near it — pylon outranks
-      // pickup, so a pylon in radius would replace the prompt this stage exists
-      // to show.
-      const spot = near(6, -8);
-      sim.items.push({ id: "tut-item-a", ...spot, itemKind: "flare", discovered: true, taken: false });
-      break;
+  if (o.items) {
+    for (const spec of o.items) {
+      if (sim.items.some((it) => it.id === spec.id)) continue;
+      const anchor = spec.near === "trainer" && sim.trainer ? sim.trainer : sim.player;
+      sim.items.push({
+        id: spec.id,
+        x: anchor.x + (spec.dx || 0),
+        z: anchor.z + (spec.dz || 0),
+        itemKind: spec.kind,
+        discovered: true,
+        taken: false,
+      });
     }
+  }
+  if (o.canClearMoss) sim.canClearMoss = true;
+  if (o.call) sim.callUnlocked = true;
+  if (o.leadUnder) {
+    // CLEAR WHAT OUTRANKS THIS VERB. The prompt resolver surfaces exactly one
+    // thing, and its order is pylon -> pickup -> gather -> survey -> strike.
+    // This objective teaches SURVEY, and the camp is small enough that a
+    // phantom seeded 14-30m out routinely lands inside the radius of a pylon
+    // or a still-mossed one — and then the press goes to that instead, forever,
+    // with nothing erroring. Exactly the starvation VERB_PRIORITY exists to
+    // name. The lesson those pylons had to teach is already over, so they are
+    // spent and their moss is gone: nothing above `survey` is left in reach.
+    for (const p of sim.pylons) { p.spent = true; p.mossed = false; }
+    for (const it of sim.items) it.taken = true;
 
-    case "craft":
-      // The two halves of one recipe, already in hand: this stage teaches the
-      // combine, not the finding.
-      sim.inventory.push({ id: "tut-craft-a", real: true, kind: "flare", claimedKind: null });
-      sim.inventory.push({ id: "tut-craft-b", real: true, kind: "tether", claimedKind: null });
-      break;
-
-    case "hands":
-      sim.inventory.push({ id: "tut-give", real: true, kind: "flare", claimedKind: null });
-      break;
-
-    case "pylon": {
-      // The one live pylon in the basin, on top of the party, so the two-hands
-      // rule is the only thing the stage is about.
-      const p = sim.pylons[0];
-      p.spent = false;
-      p.primedBy = [];
-      p.primedAt = -1e9;
-      p.x = at.x + 3;
-      p.z = at.z - 5;
-      break;
-    }
-
-    case "ask":
-      // One mind that will shade its answer and one that will not. The player
-      // is never told which; the debrief is.
-      sim.companions[2].lucidity = 22; // HALDER — low enough to shade
-      sim.companions[3].lucidity = 96; // NKEM — steady
-      break;
-
-    case "first-lie": {
-      // The lead goes under, here, on purpose, with no real marker in reach and
-      // nobody close enough to refuse the entry. Survivable and reversible: the
-      // stage ends the moment the false entry is written.
-      const lead = sim.player;
-      lead.lucidity = 0;
-      lead.hallucinating = true;
-      lead.hallucination = "phantomMarker";
-      lead.microUntil = 0;
-      for (const c of sim.companions) { c.x = at.x + 300; c.z = at.z + 300; }
-      break;
-    }
-
-    default:
-      break;
+    // The lead goes under here, on purpose, with nobody close enough to refuse
+    // the entry. Survivable and reversible: the objective ends the moment the
+    // false entry is written, and the camp does not drain anybody, so this is
+    // the one and only time a mind slips during the walk in.
+    const lead = sim.player;
+    lead.lucidity = 0;
+    lead.hallucinating = true;
+    lead.hallucination = "phantomMarker";
+    lead.microUntil = 0;
+    for (const c of sim.companions) { c.x = lead.x + 300; c.z = lead.z + 300; }
   }
   return sim;
+}
+
+/**
+ * Has the lead reached the trainer? Emits once, the first time.
+ *
+ * The objective is a PLACE, so something has to notice arrival. Kept here
+ * rather than in state.js because the trainer only exists in the camp, and
+ * state.js should not grow a concept that only one map has.
+ */
+export const TRAINER_RADIUS = 4.5;
+export function checkTrainer(sim, emit) {
+  if (!sim.trainer || sim.reachedTrainer) return false;
+  if (Math.hypot(sim.player.x - sim.trainer.x, sim.player.z - sim.trainer.z) > TRAINER_RADIUS) return false;
+  sim.reachedTrainer = true;
+  emit(sim, "reachTrainer", "TRAINER: There you are. Right — from the top.", { id: "trainer" });
+  return true;
 }
 
 /**

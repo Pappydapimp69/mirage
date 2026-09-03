@@ -78,7 +78,14 @@ check("no stage teaches a verb that the prompt resolver outranks at its site", (
   // duplicated, so re-ordering the resolver fails HERE instead of silently
   // starving a stage in play.
   const hud = readFileSync(new URL("../src/hud.js", import.meta.url), "utf8");
-  const block = hud.slice(hud.indexOf("function paintPrompt"), hud.indexOf("function paintPrompt") + 3000);
+  // Sliced to the END OF THE FUNCTION, not to a fixed character count. A window
+  // measured in characters silently narrows every time the function it watches
+  // grows, and the failure it eventually produces blames the subject ("the
+  // parse broke") rather than the window.
+  const from = hud.indexOf("function paintPrompt");
+  const rest = hud.slice(from + 1);
+  const nextFn = rest.search(/\n  function /);
+  const block = nextFn >= 0 ? hud.slice(from, from + 1 + nextFn) : hud.slice(from);
   const order = [];
   for (const [verb, marker] of [["pylon", "Set hands on the pylon"], ["pickup", "Pick up ${"], ["gather", "Hold to chop"], ["survey", "Survey ${"], ["strike", "strike ${"]]) {
     const at = block.indexOf(marker);
@@ -272,11 +279,26 @@ check("localStorage is still only touched by save.js", () => {
 // So this drives the REAL verbs against a REAL sim and asserts the event the
 // rules actually emit would satisfy the step.
 check("every step's event kind is one the rules actually emit", () => {
-  const src = readFileSync(new URL("../src/state.js", import.meta.url), "utf8");
-  const emitted = new Set([...src.matchAll(/emit\(\s*sim,\s*"([a-zA-Z]+)"/g)].map((m) => m[1]));
+  // Scans BOTH real emitters. state.js owns the rules' events; tutorial.js
+  // emits the one event that only exists in the camp — reaching the trainer —
+  // because the trainer only exists there and state.js should not grow a
+  // concept a single map has. A step pinned to a kind nobody emits is the
+  // silent-starvation failure with no error anywhere, so the set is derived
+  // from source rather than listed by hand.
+  const emitted = new Set();
+  for (const f of ["state.js", "tutorial.js"]) {
+    const src = readFileSync(new URL(`../src/${f}`, import.meta.url), "utf8");
+    for (const m of src.matchAll(/emit\(\s*sim,\s*"([a-zA-Z]+)"/g)) emitted.add(m[1]);
+  }
   emitted.add("moved"); // synthesised by main.js from movement, not by emit()
   for (const s of STAGES) {
-    assert(emitted.has(s.step.on), `stage "${s.id}" waits on event kind "${s.step.on}", which state.js never emits`);
+    assert(emitted.has(s.step.on), `stage "${s.id}" waits on event kind "${s.step.on}", which nothing emits`);
+  }
+  // The beats ride the same stream and starve the same way.
+  for (const s of STAGES) {
+    for (const b of s.beats || []) {
+      assert(emitted.has(b.on), `stage "${s.id}" has a beat on "${b.on}", which nothing emits`);
+    }
   }
 });
 

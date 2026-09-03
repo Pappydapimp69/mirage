@@ -14,9 +14,9 @@
 // The sim's job is to keep an honest, testable record of what is TRUE; `percept.js`
 // is the only place allowed to lie about it.
 
-import { generateWorld, worldToCell, cellToWorld, moveWithCollision, isBlockedAt, CELL, ITEM_KINDS, FEATURE } from "./world.js?v=mirage-0.11.2";
-import { makeRng } from "./rng.js?v=mirage-0.11.2";
-import { updateCompanions, companionRemark } from "./party.js?v=mirage-0.11.2";
+import { generateWorld, worldToCell, cellToWorld, moveWithCollision, isBlockedAt, CELL, ITEM_KINDS, FEATURE } from "./world.js?v=mirage-0.13.2";
+import { makeRng } from "./rng.js?v=mirage-0.13.2";
+import { updateCompanions, companionRemark } from "./party.js?v=mirage-0.13.2";
 
 export const PARTY_SIZE = 6; // you + 5 companions — the spec's five NPCs, plus the player
 export const MAX_LUCIDITY = 100;
@@ -141,7 +141,15 @@ export const PYLON_PAUSE = 10; // seconds of held-off decay the pulse buys
 // It also gives cohesion a job that ISN'T armour. Corroboration was removed as
 // a passive shield against the lie; this is the same party, spending the same
 // closeness, on something they have to actually do.
-export const PRIME_WINDOW = 14;
+// LONGER THAN IT TAKES CALLED HELP TO ARRIVE. 14 seconds was right when the
+// second pair of hands was already standing beside you; with cohesion they have
+// to walk, and CALL_DURATION gives them 25 seconds to do it. A prime that
+// expires at 14 means the mechanic that creates the need (a pylon takes two)
+// and the mechanic that answers it (call someone over) actively contradict:
+// help arrives to find the prime already gone, every time, and the basin's only
+// renewable relief becomes unreachable. Measured: the deceived bot's win rate
+// fell to 0% and it burned pylon after pylon priming them alone.
+export const PRIME_WINDOW = 32;
 export const DOSE_COUNT = 3; // "lumen" ampoules — the whole supply, for six people
 export const DOSE_RESTORE = 70;
 export const RECOVER_AT = 45; // lucidity a mind comes back to after hallucinating
@@ -369,8 +377,13 @@ function makeCharacter(tpl, spawn, index) {
  * every caller that doesn't know about campaigns — the balance harness, the
  * logic tests — is unaffected; only main.js opts a real playthrough in.
  */
-export function createRun({ seed = 1, difficulty = "standard", level = 1, campaignLength = 1, carryOver = null } = {}) {
-  const world = generateWorld(seed);
+export function createRun({ seed = 1, difficulty = "standard", level = 1, campaignLength = 1, carryOver = null, world: given = null } = {}) {
+  // `world` is an INJECTION POINT, not a second generator. Basins still come
+  // from generateWorld(seed) and nothing about that changes; the camp is the
+  // one authored map and hands its own world in. Everything downstream reads
+  // the same shape either way and never learns which it got — see camp.js on
+  // why that contract is asserted field-for-field in tests.
+  const world = given || generateWorld(seed);
   const rng = makeRng(seed ^ 0x5eed);
   const spawn = { x: world.camp.x, z: world.camp.z };
 
@@ -534,6 +547,16 @@ export function createRun({ seed = 1, difficulty = "standard", level = 1, campai
     time: 0, // the sim's own clock. Tests assert against THIS, never wall time.
     status: "playing", // playing | levelComplete | won | lost
     ending: null,
+    // Basins contain no mossed pylons, so this is true there and only the camp
+    // ever turns it off. See clearMoss.
+    canClearMoss: true,
+    // The camp suppresses DRAIN, not the clock. A continuous tutorial runs well
+    // past LUCIDITY_GRACE and would start eating people mid-lesson, turning a
+    // lesson into a race nobody was told they had entered — but stopping
+    // `sim.time` instead would freeze every deadline in the game with it,
+    // including the call cadences, which would then never recharge. Time moves;
+    // nobody decays.
+    noDrain: false,
     dissolveTimer: 0,
     events: [], // transient, drained by the HUD each frame
     // Reused across a campaign's basins (not recreated) so the end-of-campaign
@@ -583,7 +606,23 @@ export function pylonAt(sim, ch) {
   // the same light could prime DIFFERENT pylons and never confirm either.
   let best = null, bestD = Infinity;
   for (const p of sim.pylons) {
-    if (p.spent) continue;
+    // A mossed pylon is not a pylon yet. Returning one here would let it be
+    // primed while inert, and would put "set hands on the pylon" at the top of
+    // the prompt ladder at a site where that verb does nothing — starving
+    // whatever else is in reach. `mossedAt` is the separate lookup for the one
+    // caller that wants to find them.
+    if (p.spent || p.mossed) continue;
+    const d = dist2D(p, ch);
+    if (d <= PYLON_RADIUS && d < bestD) { bestD = d; best = p; }
+  }
+  return best;
+}
+
+/** The nearest mossed pylon in reach, which `pylonAt` deliberately hides. */
+export function mossedAt(sim, ch) {
+  let best = null, bestD = Infinity;
+  for (const p of sim.pylons) {
+    if (!p.mossed) continue;
     const d = dist2D(p, ch);
     if (d <= PYLON_RADIUS && d < bestD) { bestD = d; best = p; }
   }
@@ -614,7 +653,20 @@ export function activatePylon(sim, actor = sim.player) {
     p.primedBy = [];
     p.primedAt = sim.time;
   }
-  if (!p.primedBy.includes(actor.id)) p.primedBy.push(actor.id);
+  // IDEMPOTENT. A companion standing on a pylon waiting for a second pair of
+  // hands re-enters this function every tick — that is by design, it is how
+  // they notice the moment somebody joins. What must NOT happen is a fresh
+  // "sets hands on the pylon" line every tick for the whole wait: 12 seconds
+  // of waiting emitted 121 identical events. (An earlier version of this comment
+  // claimed that flooded the 64-entry buffer and evicted chatter with it; a
+  // sandbox built to reproduce that found no eviction at any re-entry length,
+  // because tick() drains the buffer far faster than the cap is reached. The
+  // spam was real and worth fixing on its own terms — 121 identical subtitles
+  // for one action — but the eviction was an inference, not an observation.) The
+  // bug predates cohesion; a following party simply never stood on a pylon
+  // alone for long enough to show it.
+  const already = p.primedBy.includes(actor.id);
+  if (!already) p.primedBy.push(actor.id);
 
   // One pair of hands is a claim; two is a fact. Until a SECOND mind standing
   // in the same light does the same thing, nothing happens.
@@ -622,7 +674,9 @@ export function activatePylon(sim, actor = sim.player) {
     (c) => p.primedBy.includes(c.id) && dist2D(p, c) <= PYLON_RADIUS,
   );
   if (confirmers.length < 2) {
-    emit(sim, "prime", `${actor.name} sets hands on the pylon. It needs a second.`, { who: actor.id });
+    // Only the FIRST touch announces itself. Re-entering while still waiting is
+    // silent — the state is unchanged, so there is nothing new to say.
+    if (!already) emit(sim, "prime", `${actor.name} sets hands on the pylon. It needs a second.`, { who: actor.id });
     return { ok: true, primed: true, confirmed: false, waitingFor: 2 - confirmers.length };
   }
 
@@ -680,12 +734,34 @@ export function tickLucidity(sim, ch, dt) {
     beginHallucinating(sim, ch);
     return 0;
   }
-  const grace = graceMultiplier(sim.time);
+  // The camp sets noDrain: nobody decays while they are being taught. One
+  // multiplier, at the source, so every downstream consumer of `grace` (drain,
+  // micro-episode rate, the bands) is switched off together and none of them
+  // needs to know the camp exists.
+  const grace = sim.noDrain ? 0 : graceMultiplier(sim.time);
   if (grace <= 0) return 0; // still inside the dead-calm window
 
-  const centroid = partyCentroid(sim);
+  // ISOLATION IS ABOUT THE CHAIN, NOT ABOUT A CENTROID.
+  //
+  // This used to be "more than ISOLATION_DIST from the party's centre of mass",
+  // which was the right question while the party walked in a clump behind you.
+  // Cohesion made it the wrong one: a crew ranging over ground is routinely
+  // 20-30m from the centroid while being perfectly connected, so the penalty
+  // fired on everybody, almost always, for doing exactly what the design now
+  // asks of them. Measured: party-seconds-lost went from 17 to 383 and the
+  // deceived bot's win rate from 42% to 0% — the basin was not harder, it was
+  // punishing its own intended behaviour.
+  //
+  // Being alone now means what it says: not linked, however indirectly, to
+  // anybody. Someone at the far end of a five-person chain is with the group;
+  // someone twelve metres away with nobody in between is not.
+  //
+  // This deliberately does NOT make cohesion a shield (a resolved tension):
+  // being in the chain removes a PENALTY for being alone, it does not slow the
+  // ordinary decline that everybody pays regardless.
+  const group = groupWith(sim.party, sim.player.id);
   let mult = 1;
-  if (dist2D(centroid, ch) > ISOLATION_DIST) mult *= ISOLATION_MULT;
+  if (!group.has(ch.id)) mult *= ISOLATION_MULT;
   const witnessed = sim.party.filter((o) => o !== ch && o.hallucinating && dist2D(o, ch) <= CONTAGION_DIST).length;
   mult *= 1 + CONTAGION_MULT * witnessed;
   mult *= 1 + SCAR_MULT * ch.scars;
@@ -808,6 +884,17 @@ export function beginHallucinating(sim, ch) {
 export function recover(sim, ch, cause) {
   ch.hallucinating = false;
   ch.hallucination = null;
+  // CLEAR THE SLIP WINDOW TOO. This function predates micro-episodes and only
+  // ever knew how to end the bottomed-out kind of hallucination. Pulling
+  // somebody out of a SLIP from outside — a pylon firing around them, a dose —
+  // left `microUntil` set on a character who was now lucid, which is the exact
+  // state the stress invariant forbids: a slip window with nobody in it. The
+  // refractory is applied as well, because a slip cut short by help is still a
+  // slip that happened, and without it they could immediately slip again.
+  if ((ch.microUntil || 0) > 0) {
+    ch.microUntil = 0;
+    ch.microCooldownUntil = sim.time + MICRO_REFRACTORY;
+  }
   ch.recoverProgress = 0;
   ch.scars += 1;
   ch.lucidity = RECOVER_AT;
@@ -833,6 +920,200 @@ export function useDose(sim, targetId) {
     emit(sim, "dose", `${ch.isPlayer ? "You take" : `${ch.name} takes`} a lumen dose.`, { who: ch.id });
   }
   return true;
+}
+
+// ---------------------------------------------------------------------------
+// MOSS — a pylon you can find but not yet use
+// ---------------------------------------------------------------------------
+
+/**
+ * Scrape the moss off a pylon.
+ *
+ * The camp's pylons stand there from the first frame, crusted over and inert.
+ * A player who wanders before being told anything finds one, presses the verb,
+ * and gets a real answer — "it's under moss" — rather than silence or a
+ * mysterious refusal. That is gating by what the world IS, not by forbidding a
+ * press (brain: wrong-sky#E8 — gate discovery interactables by EFFECT, give the
+ * not-yet-active case an explicit in-fiction no-op). Blocking the input instead
+ * would put a guard at a shared entry point, which is the thing that silently
+ * starves every other consumer of that event stream.
+ *
+ * `sim.canClearMoss` is what the lesson opens. Basins have no mossed pylons at
+ * all, so it defaults to true there and only the camp ever sets it false.
+ */
+export function clearMoss(sim, p, actor = sim.player) {
+  if (!p || !p.mossed) return { ok: false, reason: "not-mossed" };
+  if (!sim.canClearMoss) {
+    // A real answer, and deliberately not a refusal sound. They learn where it
+    // is; they come back when they know what it is for.
+    emit(sim, "mossFast", "Moss has grown right over it. It will not shift.", { id: p.id, who: actor.id });
+    return { ok: false, reason: "sealed" };
+  }
+  p.mossed = false;
+  emit(sim, "unmoss", "The moss comes away. Whatever this is, it is still live.", { id: p.id, who: actor.id });
+  return { ok: true, id: p.id };
+}
+
+// ---------------------------------------------------------------------------
+// COHESION — who is still with the group
+// ---------------------------------------------------------------------------
+
+/** How close two people must be to count as linked. */
+export const LINK_RANGE = 20;
+/** Beyond this from the lead, the ping turns you around. */
+export const PING_RANGE = 26;
+/** Seconds between pings, for a mind in good order. */
+export const PING_EVERY = 17;
+/** How long a pinged companion walks back before resuming their own business. */
+export const PING_DURATION = 5.5;
+/** At full decline the ping interval has stretched by this factor. */
+export const PING_STRETCH = 3.2;
+
+/**
+ * The set of ids currently in the lead's group.
+ *
+ * A CHAIN, not a leash: you are with the group if you are within LINK_RANGE of
+ * ANYONE in it, not of the player. Five people spaced 19m apart in a line are
+ * all together even though the far end is 76m from the lead. This is what makes
+ * the party read as a crew spread over ground rather than an escort walking in
+ * your pocket.
+ *
+ * `members` is whoever the CALLER believes is there. Pass percept's roster and
+ * a hallucinated sixth companion becomes a valid link in the chain — the group
+ * reads intact, through somebody who is not there, while the real party has
+ * already scattered past any real connection. Pass sim.party and you get the
+ * truth. Neither is the default; the caller chooses, and that choice is the
+ * whole mechanic.
+ *
+ * Straight-line distance, deliberately. Two people can therefore be "linked"
+ * through a cabin wall or a rock spire, which sandbox-distance#E1 is the
+ * general warning about — on obstacled ground, straight-line closeness is not
+ * reachability. Accepted here because the alternative is a BFS per pair per
+ * tick, and because a link through a thin rock reads as "they are just over
+ * there" rather than as a bug. Recorded as a decision, not an oversight.
+ */
+export function groupWith(members, leadId) {
+  const ids = members.map((m) => m.id);
+  const parent = new Map(ids.map((id) => [id, id]));
+  const find = (a) => { while (parent.get(a) !== a) { parent.set(a, parent.get(parent.get(a))); a = parent.get(a); } return a; };
+  const union = (a, b) => { const ra = find(a), rb = find(b); if (ra !== rb) parent.set(ra, rb); };
+  for (let i = 0; i < members.length; i++) {
+    for (let j = i + 1; j < members.length; j++) {
+      if (dist2D(members[i], members[j]) <= LINK_RANGE) union(members[i].id, members[j].id);
+    }
+  }
+  if (!parent.has(leadId)) return new Set();
+  const root = find(leadId);
+  return new Set(ids.filter((id) => find(id) === root));
+}
+
+/**
+ * How long THIS mind waits between pings.
+ *
+ * Stretches as they decline, so somebody slipping comes back less often and
+ * drifts further. That is the tell, and it is the good kind: you read their
+ * condition from how reliably they return, not from a number.
+ *
+ * It is also a leak if anything renders it. No HUD element may derive from this
+ * value and no roster note may change wording as it grows — it is legible only
+ * as a felt pattern over minutes.
+ */
+export function pingInterval(ch) {
+  const gone = 1 - Math.max(0, Math.min(1, ch.lucidity / 100));
+  return PING_EVERY * (1 + gone * (PING_STRETCH - 1));
+}
+
+/**
+ * Decide, once per tick, whether this companion turns back toward the lead.
+ *
+ * A DECAYING IMPULSE, NEVER A RESTORING FORCE. brain: dog#E41 — an emergent
+ * cluster driven by balanced inflow and outflow reaches a fixed point and
+ * freezes there forever. If the ping pulled inward exactly as hard as wander
+ * pushes outward, the party would settle at one radius and sit at it, which
+ * looks like a bug and feels like a leash. So a ping is an impulse with a
+ * deadline: walk back for PING_DURATION seconds, then stop and go back to your
+ * own business, wherever that has left you.
+ *
+ * Mutates only the companion's own ping bookkeeping. Draws no rng.
+ */
+export function updatePing(sim, ch) {
+  if (ch.isPlayer) return;
+  if (sim.time < (ch.pingAt || 0)) return;
+  ch.pingAt = sim.time + pingInterval(ch);
+  // A mind that is gone does not care where the group is.
+  if (ch.hallucinating) return;
+  if (dist2D(ch, sim.player) <= PING_RANGE) return;
+  ch.pingUntil = sim.time + PING_DURATION;
+}
+
+/** Is this companion currently walking back toward the lead after a ping? */
+export function isReturning(sim, ch) {
+  return sim.time < (ch.pingUntil || 0) && !ch.hallucinating;
+}
+
+// ---------------------------------------------------------------------------
+// CALL — bring one companion to you
+// ---------------------------------------------------------------------------
+
+/** Seconds before the caller may call ANYONE again. */
+export const CALL_COOLDOWN = 30;
+/** Seconds before a SPECIFIC companion will answer again. */
+export const CALL_PERSONAL = 120;
+/** How long a called companion walks toward the caller before resuming their own business. */
+export const CALL_DURATION = 25;
+
+/**
+ * Call a companion over.
+ *
+ * TWO GATES, AND A REFUSED CALL IS FREE (brain: opticon#E15 — a cooldown
+ * ability needs "recharged" AND "has a valid target now", with the cooldown
+ * assigned only after every precondition passes, or a refused use silently
+ * costs the player their next real one).
+ *
+ * THE CALL NEVER REPORTS FAILURE. This is the leak rule, and it is the whole
+ * reason this function returns so little. A "nobody heard you" message is a
+ * direct readout of hidden state: the player would learn their own condition,
+ * or a companion's, from an error string instead of from the world. So a call
+ * that will be answered and a call that will not are byte-identical at the
+ * moment of the press — same event, same text, same sound. The ONLY difference
+ * is whether anybody actually walks out of the trees, which is ambiguous,
+ * delayed, and readable as distance or terrain or somebody being busy.
+ *
+ * The cooldowns are absolute DEADLINES (`sim.time >= readyAt`), never a
+ * `remaining -= dt` countdown. cadence-frametick#E1 is about the latter: a
+ * decrementing float makes the discrete-event rate frame-rate dependent. A
+ * deadline compared against the same accumulated `sim.time` everything else
+ * uses has no such drift, and matches every other timer in this file
+ * (vouchUntil, steadyUntil, microUntil, decayPausedUntil).
+ */
+export function callCompanion(sim, id, caller = sim.player) {
+  const ch = sim.companions.find((c) => c.id === id);
+  // Gate 1: is there anybody to call? Gate 2: are both cadences recharged?
+  // Checked BEFORE anything is spent.
+  if (!ch) return { ok: false, reason: "no-target" };
+  if (sim.time < (caller.callReadyAt || 0)) return { ok: false, reason: "recharging" };
+  if (sim.time < (ch.answerReadyAt || 0)) return { ok: false, reason: "recharging" };
+
+  caller.callReadyAt = sim.time + CALL_COOLDOWN;
+  ch.answerReadyAt = sim.time + CALL_PERSONAL;
+
+  // Whether they COME is a separate question from whether the call went out.
+  // A mind that is gone does not answer, and is not told about it here — the
+  // player finds out by watching the treeline.
+  const answers = !ch.hallucinating && !inMicroEpisode(ch);
+  if (answers) {
+    ch.summonBy = caller.id;
+    ch.summonUntil = sim.time + CALL_DURATION;
+  }
+
+  // Deliberately does NOT branch on `answers`. Same text either way.
+  emit(sim, "call", `You call out for ${ch.name}.`, { who: ch.id });
+  return { ok: true, who: ch.id };
+}
+
+/** Is this companion currently walking to somebody who called them? */
+export function isAnswering(sim, ch) {
+  return !!ch.summonBy && sim.time < (ch.summonUntil || 0) && !ch.hallucinating;
 }
 
 /**
@@ -1838,14 +2119,24 @@ export function checkEndings(sim) {
     sim.dissolveTimer = 0;
   }
 
-  if (sim.time >= TIME_LIMIT && sim.status === "playing") {
+  // Nobody decays in camp and nothing is racing, so the daylight limit has no
+  // business ending a lesson either.
+  if (!sim.noDrain && sim.time >= TIME_LIMIT && sim.status === "playing") {
     sim.status = "lost";
     sim.ending = "darkness";
     emit(sim, "end", "The light goes. Whatever is still out here stays out here.");
     return;
   }
 
-  if (trueLogCount(sim) >= sim.monoliths.length && sim.status === "playing") {
+  // `>= sim.monoliths.length` is trivially TRUE when there are no markers at
+  // all, so a map with none was won by standing still — which is exactly what
+  // the camp is. The tutorial ended three seconds in with an extraction screen,
+  // and every test passed, because no test ever ran the win check against a map
+  // with an empty objective list.
+  //
+  // Requiring at least one marker is right for basins too: a basin that
+  // generated none should not be winnable without doing anything.
+  if (sim.monoliths.length > 0 && trueLogCount(sim) >= sim.monoliths.length && sim.status === "playing") {
     // Survey complete — now walk it home. Extraction needs YOU plus at least
     // two others physically at camp; a lone lead with a written record is a
     // rumour, not a survey.

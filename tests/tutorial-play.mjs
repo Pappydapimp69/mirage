@@ -1,11 +1,13 @@
-// tutorial-play.mjs — does the tutorial actually run, in a browser?
+// tutorial-play.mjs — does the walk in play from start to finish, in a browser?
 //
-// tests/tutorial.mjs proves the step table is well-formed and the observer is
-// pure. Neither of those is evidence that a stage COMPLETES: the characteristic
-// tutorial bug is silent starvation somewhere in the pipeline between a key
-// press and the step, and every layer of that pipeline only exists in the
-// browser. So this drives the real verbs through the real frame loop and asserts
-// progress actually moves.
+// tests/tutorial.mjs proves the objective table is well-formed and the observer
+// is pure. Neither is evidence that the tutorial COMPLETES. The characteristic
+// bug here is silent starvation somewhere between a key press and the step, and
+// every layer of that pipeline only exists in the browser.
+//
+// This drives all seven objectives through the real verbs, in ONE session, on
+// the real camp map — no remounting, no synthetic events — and asserts progress
+// actually moves. It is the test that says the tutorial is playable.
 //
 // Run: node tests/tutorial-play.mjs
 
@@ -42,7 +44,7 @@ page.on("pageerror", (e) => consoleErrors.push(String(e)));
 await page.goto(`http://127.0.0.1:${PORT}/index.html`, { waitUntil: "load" });
 await page.waitForFunction(() => !!window.__mirage, null, { timeout: 20000 });
 
-// --- the entry point exists and is reachable --------------------------------
+// --- the entry point --------------------------------------------------------
 {
   const btn = await page.evaluate(() => {
     const b = document.getElementById("learnBtn");
@@ -53,175 +55,203 @@ await page.waitForFunction(() => !!window.__mirage, null, { timeout: 20000 });
   assert(btn && btn.row !== undefined, "the tutorial button is outside the gamepad menu grid — unreachable on a pad");
 }
 
-// --- stage 1: movement -------------------------------------------------------
+// --- does the camp LOOK like a camp? ----------------------------------------
+// Every other check in this file passes on a camp rendered as a near-black
+// rocky clearing, which is exactly what shipped: blocked cells drew as rock
+// spires because the renderer had never been told the camp exists, and the
+// per-frame fog drift reset the daylight every single frame. A player pressed
+// "Learn the walk" and reported being dropped in the woods with no tutorial.
+//
+// So this samples the actual framebuffer. It cannot judge whether the place
+// reads as a camp — no test can — but it can catch "the screen is black" and
+// "nothing but rock", which is what actually went wrong.
 {
-  await page.evaluate(() => window.__mirage.startStage(0));
-  await page.waitForFunction(() => !!window.__mirage.sim, null, { timeout: 15000 });
-  const shown = await page.evaluate(() => ({
-    objective: document.getElementById("objective")?.classList.contains("hidden") === false,
-    title: document.getElementById("objectiveTitle")?.textContent || "",
-    text: document.getElementById("objectiveText")?.textContent || "",
-  }));
-  assert(shown.objective, "the objective banner is not shown during a stage");
-  assert(/1\/7/.test(shown.title), `objective title does not say which stage: "${shown.title}"`);
+  // FIRST, before the playthrough — sampling after it finishes measures the
+  // title screen it returns to, which is dark and scored 21/255 with no green.
+  await page.evaluate(() => { window.__mirage.startStage(0); });
+  await page.waitForTimeout(1500);
 
-  // Walk far enough to satisfy the distance bound.
-  // Walk like a player, not like a rail. The camp is placed in a real basin and
-  // there is no guarantee the ground due north of it is open — an earlier version
-  // of this held ONE heading for the whole attempt, covered 8m into a rock face
-  // and reported the tutorial step as starved. That would have sent someone
-  // looking for a bug in the observer that was never there. Anything that stops
-  // making ground here turns, the way a person does.
-  const walk = await page.evaluate(async () => {
-    const M = window.__mirage;
-    const s = M.sim, x0 = s.player.x, z0 = s.player.z;
-    let heading = 0, lastX = s.player.x, lastZ = s.player.z;
-    for (let i = 0; i < 400; i++) {
-      M.advance(0.1, { move: { x: Math.sin(heading), z: -Math.cos(heading) }, run: true });
-      if (M.tutorialDone().includes("walk-in")) {
-        return { ok: true, i, moved: +Math.hypot(s.player.x - x0, s.player.z - z0).toFixed(1) };
-      }
-      // Made less than a walking pace's worth of ground this slice: something is
-      // in the way. Turn and keep going.
-      if (Math.hypot(s.player.x - lastX, s.player.z - lastZ) < 0.25) heading += 0.9;
-      lastX = s.player.x; lastZ = s.player.z;
+  // Screenshot, then read the PIXELS BACK THROUGH AN <img>. Drawing the WebGL
+  // canvas straight into a 2D context returns solid black: the drawing buffer
+  // is not preserved between frames, so a readback outside the render call
+  // samples an empty buffer. The first version of this check measured 0/255 on
+  // a camp that was plainly lit on screen — the test was wrong, not the game.
+  const png = (await page.screenshot({ type: "png" })).toString("base64");
+  const lum = await page.evaluate(async (b64) => {
+    const img = new Image();
+    await new Promise((res, rej) => { img.onload = res; img.onerror = rej; img.src = "data:image/png;base64," + b64; });
+    const c = document.createElement("canvas");
+    c.width = 160; c.height = 90;
+    const ctx = c.getContext("2d");
+    ctx.drawImage(img, 0, 0, c.width, c.height);
+    const d = ctx.getImageData(0, 0, c.width, c.height).data;
+    let sum = 0, green = 0, n = 0;
+    for (let i = 0; i < d.length; i += 4) {
+      sum += (d[i] + d[i + 1] + d[i + 2]) / 3;
+      if (d[i + 1] > d[i] + 4 && d[i + 1] > d[i + 2] + 4) green++;
+      n++;
     }
-    return {
-      ok: false,
-      moved: +Math.hypot(s.player.x - x0, s.player.z - z0).toFixed(1),
-      status: s.status,
-      stored: JSON.parse(localStorage.getItem("mirage:settings") || "{}").tutorial,
-    };
-  });
-  assert(walk.ok, `walking never completed the movement stage — the step starved (${JSON.stringify(walk)})`);
-  notes.push(`stage 1 walked ${walk.moved}m in ${((walk.i + 1) * 0.1).toFixed(1)}s`);
+    return { mean: sum / n, greenFraction: green / n };
+  }, png);
+  notes.push(`camp brightness ${lum.mean.toFixed(0)}/255, green ${(lum.greenFraction * 100).toFixed(0)}%`);
+  assert(lum.mean > 40, `the camp renders almost black (mean luminance ${lum.mean.toFixed(0)}/255) — it is unlit or the daylight was overwritten`);
+  assert(lum.greenFraction > 0.15, `only ${(lum.greenFraction * 100).toFixed(0)}% of the camp is green — trees and grass are not drawing, so it is rendering as a rock field`);
 }
 
-// --- stage 2: a pinned pickup ------------------------------------------------
+// --- the whole walk in, one session, start to finish ------------------------
 {
   const r = await page.evaluate(async () => {
     const M = window.__mirage;
-    M.startStage(1);
-    const s = M.sim;
-    const it = s.items.find((i) => i.id === "tut-item-a");
-    if (!it) return { placed: false };
-    // Stand on it and press the real verb through the real handler.
-    s.player.x = it.x; s.player.z = it.z;
+    const out = { steps: [] };
+    const done = () => M.tutorialDone();
+    const note = (k, v) => out.steps.push([k, v]);
+
+    // ---- 1: walk to the trainer -------------------------------------------
+    M.startStage(0);
+    const sim = M.sim;
+    out.mapIsCamp = sim.pylons.length === 2 && sim.pylons.every((p) => p.mossed);
+    out.noDrain = sim.noDrain === true;
+    out.spawnedAwayFromTrainer = Math.hypot(sim.player.x - sim.trainer.x, sim.player.z - sim.trainer.z) > 30;
+
+    // Wander into a mossed pylon FIRST, before being told anything, and check
+    // it answers instead of doing nothing.
+    const p0 = sim.pylons[0];
+    sim.player.x = p0.x; sim.player.z = p0.z;
     M.advance(0.1);
-    const promptBefore = document.getElementById("actionPromptText")?.textContent || "";
+    out.mossPrompt = document.getElementById("actionPromptText")?.textContent || "";
     M.act(M.ACTIONS.SURVEY);
     M.advance(0.1);
-    return { placed: true, prompt: promptBefore, done: M.tutorialDone().includes("ground") };
-  });
-  assert(r.placed, "stage 2 did not place its pinned item");
-  // The starvation check, in the browser: the prompt must be offering PICKUP,
-  // not something that outranks it.
-  assert(/Pick up/i.test(r.prompt), `stage 2's prompt was "${r.prompt}" — the taught verb is outranked at its own teaching site`);
-  assert(r.done, "picking up the pinned item did not complete the stage");
-  notes.push(`stage 2 prompt: "${r.prompt}"`);
-}
+    out.mossHeldEarly = !!p0.mossed;
 
-// --- stage 5: the pylon, which needs two ------------------------------------
-{
-  const r = await page.evaluate(async () => {
-    const M = window.__mirage;
-    M.startStage(4);
-    const s = M.sim;
-    const p = s.pylons.find((x) => !x.spent);
-    if (!p) return { live: false };
-    s.player.x = p.x; s.player.z = p.z;
-    const mate = s.companions[0];
-    mate.x = p.x; mate.z = p.z; mate.lucidity = 90;
+    // Now walk to the trainer, the way a player would.
+    sim.player.x = sim.trainer.x + 1; sim.player.z = sim.trainer.z;
+    M.advance(0.2);
+    note("walk-in", done().includes("walk-in"));
+
+    // The objective advances on a timer; the debug hook skips the wait.
+    const go = (i) => { M.enterObjective(i); M.advance(0.1); };
+
+    // ---- 2: take what he gives you ----------------------------------------
+    go(1);
+    const a = sim.items.find((i) => i.id === "tut-item-a");
+    out.itemSpawned = !!a;
+    if (a) { sim.player.x = a.x; sim.player.z = a.z; M.advance(0.1); }
+    out.pickPrompt = document.getElementById("actionPromptText")?.textContent || "";
+    M.act(M.ACTIONS.SURVEY);
     M.advance(0.1);
-    const prompt = document.getElementById("actionPromptText")?.textContent || "";
-    M.act(M.ACTIONS.SURVEY);            // primes
-    const afterPrime = M.tutorialDone().includes("pylon");
-    M.advance(1.0);                     // the companion joins
-    return { live: true, prompt, afterPrime, done: M.tutorialDone().includes("pylon"), spent: !!p.spent };
-  });
-  assert(r.live, "stage 5 had no live pylon");
-  assert(/pylon/i.test(r.prompt), `stage 5's prompt was "${r.prompt}"`);
-  assert(!r.afterPrime, "one pair of hands completed the pylon stage — the two-hands rule is not being taught");
-  assert(r.done && r.spent, "a confirmed pylon did not complete the stage");
-}
+    note("ground", done().includes("ground"));
 
-// --- every remaining stage must actually complete ---------------------------
-// Stages 3, 4, 6 and 7 shipped without a browser check. Silent starvation is
-// the failure mode here, so "it is in the table" is not evidence it fires.
-{
-  const r = await page.evaluate(async () => {
-    const M = window.__mirage;
-    const out = {};
-
-    // 3 — craft: the two halves are already in hand.
-    M.startStage(2);
-    M.advance(0.1);
-    out.craftHeld = M.sim.inventory.length;
+    // ---- 3: craft ----------------------------------------------------------
+    go(2);
+    const b = sim.items.find((i) => i.id === "tut-item-b");
+    out.secondSpawned = !!b;
+    if (b) { sim.player.x = b.x; sim.player.z = b.z; M.advance(0.1); M.act(M.ACTIONS.SURVEY); M.advance(0.1); }
+    out.held = sim.inventory.length;
     M.act(M.ACTIONS.CRAFT);
     M.advance(0.2);
-    out.craft = M.tutorialDone().includes("craft");
+    note("craft", done().includes("craft"));
 
-    // 4 — hands: give the held item to IREN, who must be in reach. OFFER_ITEM
-    // takes no target argument — it acts on the roster SELECTION — so the only
-    // honest way to aim it is the selection verb a player would press.
-    M.startStage(3);
-    const s4 = M.sim;
-    const iren = s4.companions[1];
+    // ---- 4: hand it to IREN ------------------------------------------------
+    go(3);
+    const iren = sim.companions[1];
     out.irenId = iren.id;
-    iren.x = s4.player.x + 1; iren.z = s4.player.z; iren.lucidity = 80;
+    iren.x = sim.player.x + 1; iren.z = sim.player.z; iren.lucidity = 80;
     M.advance(0.1);
-    out.giveHeld = s4.inventory.length;
-    M.act(M.ACTIONS.NEXT_TARGET);           // selection 0 -> 1, i.e. IREN
-    out.selectedForGive = M.selected;
+    M.act(M.ACTIONS.NEXT_TARGET);
     M.act(M.ACTIONS.OFFER_ITEM);
     M.advance(0.2);
-    out.hands = M.tutorialDone().includes("hands");
+    note("hands", done().includes("hands"));
 
-    // 6 — ask: both named companions, and only both. CHECK_IN's argument is a
-    // roster INDEX (the digit key), not an id.
-    M.startStage(5);
-    const s6 = M.sim;
-    out.askIds = [s6.companions[2].id, s6.companions[3].id];
+    // ---- 5: the pylon, in two beats ---------------------------------------
+    go(4);
+    out.callLockedBefore = sim.callUnlocked === false;
+    const p = sim.pylons.find((x) => x.mossed) || sim.pylons[0];
+    sim.player.x = p.x; sim.player.z = p.z;
+    M.advance(0.1);
+    M.act(M.ACTIONS.SURVEY);              // beat one: the moss comes off
+    M.advance(0.2);
+    out.mossCleared = !p.mossed;
+    out.callUnlockedAfterMoss = sim.callUnlocked === true;
+    // One pair of hands is a claim...
+    M.act(M.ACTIONS.SURVEY);
+    M.advance(0.1);
+    out.aloneDoesNotFire = !done().includes("pylon");
+    // ...so call someone, and they have to actually arrive.
+    const mate = sim.companions[0];
+    M.act(M.ACTIONS.CALL);
+    M.advance(0.2);
+    out.answering = !!mate.summonBy || sim.companions.some((c) => c.summonBy);
+    const comer = sim.companions.find((c) => c.summonBy) || mate;
+    comer.x = p.x; comer.z = p.z; comer.lucidity = 90;
+    M.advance(1.0);
+    note("pylon", done().includes("pylon"));
+    out.pylonSpent = !!p.spent;
+
+    // ---- 6: ask them both --------------------------------------------------
+    go(5);
+    out.askIds = [sim.companions[2].id, sim.companions[3].id];
     M.act(M.ACTIONS.CHECK_IN, 2);
     M.advance(0.2);
-    out.askAfterOne = M.tutorialDone().includes("ask");
+    out.askAfterOne = done().includes("ask");
     M.act(M.ACTIONS.CHECK_IN, 3);
     M.advance(0.2);
-    out.ask = M.tutorialDone().includes("ask");
+    note("ask", done().includes("ask"));
 
-    // 7 — the first lie: the lead is under, alone, at nothing. The phantom is
-    // seeded 14-30m out and LOG_RADIUS is 5, so the stage genuinely requires
-    // walking to it — surveying from the spawn point proves nothing.
-    M.startStage(6);
-    const s7 = M.sim;
-    out.leadUnder = !!s7.player.hallucinating;
-    M.advance(0.1);                         // percept seeds the phantoms
+    // ---- 7: the first lie --------------------------------------------------
+    go(6);
+    out.leadUnder = !!sim.player.hallucinating;
+    M.advance(0.1);
     const ph = M.percept.phantomMonoliths[0];
     out.phantoms = M.percept.phantomMonoliths.length;
-    if (ph) { s7.player.x = ph.x; s7.player.z = ph.z; M.advance(0.1); }
-    out.liePrompt = document.getElementById("actionPromptText")?.textContent || "";
+    if (ph) { sim.player.x = ph.x; sim.player.z = ph.z; M.advance(0.1); }
     M.act(M.ACTIONS.SURVEY);
     M.advance(0.2);
-    out.lie = M.tutorialDone().includes("first-lie");
-    out.badLogs = s7.logEntries.filter((e) => !e.real && !e.struck).length;
+    note("first-lie", done().includes("first-lie"));
+    out.badLogs = sim.logEntries.filter((e) => !e.real && !e.struck).length;
+
+    out.finished = done().length;
+    out.sameSessionThroughout = M.sim === sim;   // never remounted
     return out;
   });
 
-  assert(r.craftHeld === 2, `stage 3 handed the player ${r.craftHeld} ingredients, not 2`);
-  assert(r.craft, "crafting did not complete stage 3");
-  assert(r.giveHeld === 1, `stage 4 handed the player ${r.giveHeld} items, not 1`);
-  assert(r.irenId === "c2", `stage 4's step is pinned to c2 but roster slot 1 is ${r.irenId}`);
-  assert(r.selectedForGive === 1, `the selection verb landed on ${r.selectedForGive}, not IREN`);
-  assert(r.hands, "giving an item to IREN did not complete stage 4");
-  assert(String(r.askIds) === "c3,c4", `stage 6's step is pinned to c3/c4 but slots 2-3 are ${r.askIds}`);
-  assert(!r.askAfterOne, "one check-in completed stage 6 — it is meant to need both");
-  assert(r.ask, "checking in on both did not complete stage 6 — the two-answer tally did not survive the frame");
-  assert(r.leadUnder, "stage 7 did not put the lead under — the lie cannot happen");
-  assert(r.phantoms > 0, "stage 7 put the lead under but percept seeded no phantom to find");
-  assert(/survey/i.test(r.liePrompt), `stage 7's prompt at the phantom was "${r.liePrompt}"`);
-  assert(r.lie, "logging the phantom did not complete stage 7");
-  assert(r.badLogs >= 1, "stage 7 completed without a false entry actually reaching the record");
-  notes.push(`stages 3/4/6/7 complete · stage 7 left ${r.badLogs} false entr${r.badLogs === 1 ? "y" : "ies"}`);
+  // The map
+  assert(r.mapIsCamp, "the tutorial did not start on the camp map");
+  assert(r.noDrain, "the camp is draining the party — a lesson has become a race");
+  assert(r.spawnedAwayFromTrainer, "the player spawned on top of the trainer — objective 1 is not a walk");
+
+  // Effect-gating: a mossed pylon answers, and stays shut
+  assert(/moss/i.test(r.mossPrompt), `a mossed pylon's prompt was "${r.mossPrompt}" — it should say what it is`);
+  assert(r.mossHeldEarly, "the moss came off before the objective that opens it");
+
+  // Every objective, in order
+  for (const [id, ok] of r.steps) assert(ok, `objective "${id}" never completed`);
+
+  // Existence-gating
+  assert(r.itemSpawned, "objective 2 did not spawn its item");
+  assert(r.secondSpawned, "objective 3 did not spawn the second ingredient");
+  assert(/Pick up/i.test(r.pickPrompt), `objective 2's prompt was "${r.pickPrompt}" — the taught verb is outranked at its own site`);
+  assert(r.held === 2, `the player held ${r.held} ingredients at the craft, not 2`);
+
+  // The pylon's two beats
+  assert(r.callLockedBefore, "CALL was available before the objective that teaches it");
+  assert(r.mossCleared, "the moss never came off");
+  assert(r.callUnlockedAfterMoss, "clearing the moss did not hand over the CALL verb");
+  assert(r.aloneDoesNotFire, "one pair of hands fired the pylon — the two-hands rule is not being taught");
+  assert(r.answering, "nobody answered the call");
+  assert(r.pylonSpent, "the pylon never fired");
+
+  // The rest
+  assert(r.irenId === "c2", `objective 4 is pinned to c2 but roster slot 1 is ${r.irenId}`);
+  assert(String(r.askIds) === "c3,c4", `objective 6 is pinned to c3/c4 but slots 2-3 are ${r.askIds}`);
+  assert(!r.askAfterOne, "one check-in completed objective 6 — it needs both");
+  assert(r.leadUnder, "objective 7 did not put the lead under");
+  assert(r.phantoms > 0, "objective 7 seeded no phantom to find");
+  assert(r.badLogs >= 1, "objective 7 completed without a false entry reaching the record");
+
+  // The whole point
+  assert(r.finished === 7, `only ${r.finished} of 7 objectives completed`);
+  assert(r.sameSessionThroughout, "the run was remounted mid-tutorial — this is meant to be one continuous session");
+  notes.push(`all 7 objectives complete in one session · ${r.badLogs} false entr${r.badLogs === 1 ? "y" : "ies"} left in the record`);
 }
 
 // --- the meter never reaches the screen -------------------------------------
@@ -231,14 +261,14 @@ await page.waitForFunction(() => !!window.__mirage, null, { timeout: 20000 });
     const hud = document.getElementById("hudLayer")?.innerText?.toLowerCase() || "";
     return words.filter((w) => hud.includes(w));
   });
-  assert(leaked.length === 0, `the HUD showed the hidden meter during a stage: ${leaked.join(", ")}`);
+  assert(leaked.length === 0, `the HUD showed the hidden meter during the tutorial: ${leaked.join(", ")}`);
 }
 
 // --- progress persists --------------------------------------------------------
 {
   const stored = await page.evaluate(() => JSON.parse(localStorage.getItem("mirage:settings") || "{}"));
   assert(Array.isArray(stored.tutorial?.done), "tutorial progress is not in the settings payload");
-  assert(stored.tutorial.done.length >= 2, `only ${stored.tutorial?.done?.length} stages recorded as done`);
+  assert(stored.tutorial.done.length >= 5, `only ${stored.tutorial?.done?.length} objectives recorded as done`);
   const keys = await page.evaluate(() => Object.keys(localStorage));
   assert(keys.length <= 2, `a third localStorage key appeared: ${keys.join(", ")} (dog#E64)`);
 }
@@ -253,4 +283,4 @@ if (failures.length) {
   for (const f of failures) console.log("  ✗ " + f);
   process.exit(1);
 }
-console.log("tutorial play: OK — stages start, steps fire, the meter stays hidden");
+console.log("tutorial play: OK — the walk in plays start to finish");

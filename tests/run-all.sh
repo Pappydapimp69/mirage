@@ -23,6 +23,18 @@ echo "== kinds (the four that used to be static) =="
 node tests/kinds.test.mjs
 echo
 
+echo "== triggers (does the index fire on the mistakes it was built from?) =="
+node tests/triggers.mjs
+echo
+
+echo "== camp (the one authored map earns its guarantees) =="
+node tests/camp.mjs
+echo
+
+echo "== cohesion (the call, the chain, the ping) =="
+node tests/cohesion.mjs
+echo
+
 echo "== tutorial (step pinning, starvation, meter leaks) =="
 node tests/tutorial.mjs
 echo
@@ -33,10 +45,6 @@ echo
 
 echo "== formation (is the party ever actually in frame?) =="
 node tests/formation.mjs "${FORMATION_SEEDS:-6}"
-echo
-
-echo "== balance (whole runs to a terminal state) =="
-node tests/balance.mjs "${BALANCE_SEEDS:-12}"
 echo
 
 if [ -d /opt/pw-browsers ] && node -e 'require("/opt/node22/lib/node_modules/playwright")' 2>/dev/null; then
@@ -74,5 +82,25 @@ else
   echo "   (the 3D layer was NOT exercised in this run)"
 fi
 echo
+
+# BALANCE RUNS LAST, AND DOES NOT BLOCK WHAT FOLLOWS IT.
+#
+# `set -e` plus a known-red test in the middle of the file meant the entire
+# browser tier below it never ran — one long-standing difficulty question was
+# silently switching off the 3D layer and the tutorial playthrough for anyone
+# running the suite. The `deceived` row is a difficulty DECISION, not a defect,
+# so it is reported loudly at the end and its status carried rather than
+# short-circuiting everything after it.
+echo "== balance (whole runs to a terminal state) =="
+set +e
+node tests/balance.mjs "${BALANCE_SEEDS:-12}"
+BALANCE=$?
+set -e
+echo
+
+if [ "$BALANCE" -ne 0 ]; then
+  echo "ALL MIRAGE TESTS PASSED — except balance, the known open difficulty question"
+  exit 1
+fi
 
 echo "ALL MIRAGE TESTS PASSED"

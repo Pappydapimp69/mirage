@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#0a0f16" />
   <title>MIRAGE — five minds and yours</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%230a0f16'/%3E%3Cpath d='M4 22h24' stroke='%23596579' stroke-width='2'/%3E%3Crect x='9' y='8' width='4' height='14' fill='%2374e0ff'/%3E%3Crect x='19' y='11' width='4' height='11' fill='%23b06a72'/%3E%3C/svg%3E" />
-  <link rel="stylesheet" href="css/style.css?v=mirage-0.11.2" />
+  <link rel="stylesheet" href="css/style.css?v=mirage-0.13.2" />
 </head>
 <body>
   <canvas id="gl"></canvas>
@@ -58,10 +58,15 @@
       <button id="continueBtn" class="big-btn resume" data-row="2" data-col="0">
         Resume run<span id="continueDetail" class="resume-detail"></span>
       </button>
-      <button id="startBtn" class="big-btn" data-row="3" data-col="0">Walk in</button>
-      <button id="learnBtn" class="big-btn quiet" data-row="4" data-col="0">
+      <!-- TUTORIAL ABOVE "Walk in", and not quiet, until it has been finished.
+           It was below and styled quiet, so a first-time player pressed the
+           obvious top button and was dropped straight into a basin with no idea
+           the tutorial existed. Ordering is the whole fix; refreshLearnLabel()
+           demotes it once the walk in is done. -->
+      <button id="learnBtn" class="big-btn" data-row="3" data-col="0">
         Learn the walk<span id="learnDetail" class="resume-detail"></span>
       </button>
+      <button id="startBtn" class="big-btn" data-row="4" data-col="0">Walk in</button>
       <button id="howBtn" class="text-btn" data-row="5" data-col="0">How to play</button>
 
       <p id="menuHints" class="menu-hints"></p>
@@ -245,9 +250,9 @@
       </div>
       <label class="field-label">Field of view</label>
       <div class="diff-row">
-        <button class="diff fov" data-fov="80" data-row="1" data-col="0">Narrow</button>
-        <button class="diff fov sel" data-fov="90" data-row="1" data-col="1">Normal</button>
-        <button class="diff fov" data-fov="100" data-row="1" data-col="2">Wide</button>
+        <button class="diff fov" data-fov="70" data-row="1" data-col="0">Narrow</button>
+        <button class="diff fov sel" data-fov="78" data-row="1" data-col="1">Normal</button>
+        <button class="diff fov" data-fov="90" data-row="1" data-col="2">Wide</button>
       </div>
       <button id="resumeBtn" class="big-btn" data-row="2" data-col="0">Keep walking</button>
       <button id="quitBtn" class="text-btn" data-row="3" data-col="0">Abandon the survey</button>
@@ -258,7 +263,7 @@
   <!-- DEBRIEF -->
   <div id="debriefLayer" class="screen hidden"></div>
 
-  <script type="module" src="src/main.js?v=mirage-0.11.2"></script>
+  <script type="module" src="src/main.js?v=mirage-0.13.2"></script>
   <noscript><p style="color:#ccd">MIRAGE needs JavaScript and WebGL.</p></noscript>
 </body>
 </html>

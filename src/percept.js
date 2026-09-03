@@ -11,8 +11,10 @@
 // assert "a hallucinating lead is shown a marker the sim does not contain"
 // without booting a browser.
 
-import { HALLUCINATION, BAND, bandOf, ITEM_INFO, LUCIDITY_GRACE, CORROBORATE_RADIUS } from "./state.js?v=mirage-0.11.2";
-import { ITEM_KINDS } from "./world.js?v=mirage-0.11.2";
+import { HALLUCINATION, BAND, bandOf, ITEM_INFO, LUCIDITY_GRACE, CORROBORATE_RADIUS,
+  LINK_RANGE, PING_RANGE,
+} from "./state.js?v=mirage-0.13.2";
+import { ITEM_KINDS } from "./world.js?v=mirage-0.13.2";
 
 const PHANTOM_NAMES = ["the Sixth Stone", "the Watching Slab", "the Other Cairn", "the Hollow Tooth"];
 const PHANTOM_COMPANIONS = ["ODEN", "MARIS", "THE SEVENTH"];
@@ -456,9 +458,23 @@ const CHORUS_EARNED = new Set([
 // out of formation while you weren't watching — so the shape of the party
 // stays intact precisely when it has stopped being intact. The gap you should
 // have noticed is the gap that gets covered.
-const VACANCY_DIST = 14; // beyond this (or gone) a companion has left their slot
-const VACANCY_RETURN = 10; // ...and must come back inside this to reclaim it (hysteresis)
-const SLOT_MEMORY_DIST = 9; // how close a companion must be for their slot to be remembered
+// These three are scaled to COHESION RANGE, not to a formation.
+//
+// They were originally 14 / 10 / 9, tuned when the party walked in the lead's
+// pocket and "their slot" meant a station 5-7m away. Cohesion replaced that:
+// a companion is with the group if they are within LINK_RANGE of ANYONE, so in
+// ordinary play they range much further and the old SLOT_MEMORY_DIST of 9 meant
+// almost nobody was ever close enough to have a remembered place at all. The
+// phantom then had no gap to fill and fell back to orbiting, which is the
+// hallucination's weakest form — and nothing errored, the tell just quietly
+// stopped happening.
+//
+// Anchored to LINK_RANGE so the two systems cannot drift apart again: you are
+// remembered while you are linked, you have left when you are past the ping's
+// reach, and you reclaim your place by coming properly back inside the link.
+const VACANCY_DIST = PING_RANGE; // beyond this (or gone) a companion has left their place
+const VACANCY_RETURN = LINK_RANGE * 0.75; // ...and must come back inside this to reclaim it (hysteresis)
+const SLOT_MEMORY_DIST = LINK_RANGE; // how close a companion must be for their place to be remembered
 const GHOST_EASE = 1.1; // how fast the phantom slides into a slot — a drift, never a cut
 // ...and hard-capped at a real companion's own walking pace (party.js
 // WALK_SPEED). An ease alone is smooth but not necessarily PLAUSIBLE: a
@@ -702,13 +718,33 @@ function updateDoubledParty(percept, sim, p, dt, lying) {
     return;
   }
 
-  // Remember formation slots, in the eye's own frame.
+  // Remember where each companion IS, in the eye's own frame.
+  //
+  // SEEDED ON THE FIRST FRAME OF THE EPISODE, for everybody, whatever the
+  // distance. This used to record only companions already inside
+  // SLOT_MEMORY_DIST, which was right when the party walked in formation and
+  // wrong the moment cohesion replaced following: a wandering crew is rarely
+  // stably inside that radius, so almost nobody ever HAD a remembered place to
+  // vacate, and the phantom fell back to orbiting — the hallucination's weakest
+  // form — in most episodes. Measured at 13% takeover before this, against 90%
+  // when the party walked behind you.
+  //
+  // Seeding is also the more honest model: the lead has been looking at these
+  // people all along. They know roughly where everyone was when the light
+  // went. Distant ones are clamped inward so the phantom stands somewhere the
+  // lead could actually see rather than eighty metres out in the fog.
   for (const c of sim.companions) {
     const dx = c.x - p.x;
     const dz = c.z - p.z;
     const r = Math.hypot(dx, dz);
-    if (c.hallucinating || r > SLOT_MEMORY_DIST || r < 1e-6) continue;
-    percept.slotMemory.set(c.id, { r, bearing: angularDelta(Math.atan2(dz, dx), p.yaw) });
+    if (r < 1e-6) continue;
+    const fresh = !percept.slotMemory.has(c.id);
+    if (c.hallucinating && !fresh) continue;
+    if (!fresh && r > SLOT_MEMORY_DIST) continue;
+    percept.slotMemory.set(c.id, {
+      r: Math.min(r, SLOT_MEMORY_DIST),
+      bearing: angularDelta(Math.atan2(dz, dx), p.yaw),
+    });
   }
 
   // Does the current occupant still count as away? (hysteresis: they have to
@@ -717,6 +753,18 @@ function updateDoubledParty(percept, sim, p, dt, lying) {
   if (held) {
     const back = !held.hallucinating && Math.hypot(held.x - p.x, held.z - p.z) <= VACANCY_RETURN;
     if (back) percept.ghostOf = null;
+    // PREEMPTION. The pick used to be sticky: whoever was first found missing
+    // held the phantom's attention until they personally walked back. That was
+    // fine when the only way to be missing was to break, and wrong the moment
+    // cohesion let people wander legitimately far — a stroller claimed the slot
+    // in the first second of an episode and still held it minutes later, so the
+    // companion who actually came apart was never the one impersonated. The
+    // phantom stood over a real absence the whole time and told the wrong lie.
+    // Measured at 30% of episodes impersonating a stroller instead of the mind
+    // that broke, with the takeover itself running the entire episode.
+    else if (!held.hallucinating && sim.companions.some((c) => c.hallucinating && percept.slotMemory.has(c.id))) {
+      percept.ghostOf = null;
+    }
   } else {
     percept.ghostOf = null;
   }
@@ -726,13 +774,27 @@ function updateDoubledParty(percept, sim, p, dt, lying) {
     // still NEAREST is the one who most recently walked out of it. Picking by
     // distance rather than by roster order keeps the choice deterministic
     // without pinning it to c1 forever.
+    // A MIND THAT HAS COME APART OUTRANKS ONE THAT MERELY WANDERED OFF.
+    //
+    // Both leave a gap, but they are not the same gap. Someone who broke is the
+    // gap that matters — the phantom standing in their place is what makes the
+    // roster's one confident line a lie about a specific person. Before
+    // cohesion this never came up, because a following party had nobody
+    // casually beyond the vacancy distance; now people are out there all the
+    // time, and picking purely by nearest meant a stroller was impersonated
+    // instead of the person who had just stopped making sense, in about a
+    // third of episodes. Distance still breaks ties within each group.
     let best = null;
     let bestD = Infinity;
+    let bestBroken = false;
     for (const c of sim.companions) {
       if (!percept.slotMemory.has(c.id)) continue;
       const d = Math.hypot(c.x - p.x, c.z - p.z);
       if (!c.hallucinating && d <= VACANCY_DIST) continue;
-      if (d < bestD) { bestD = d; best = c; }
+      const broken = !!c.hallucinating;
+      if (best && bestBroken && !broken) continue;        // never demote a broken pick
+      if (best && !bestBroken && broken) { bestD = Infinity; } // a broken one always wins
+      if (d < bestD) { bestD = d; best = c; bestBroken = broken; }
     }
     if (best) {
       percept.ghostOf = best.id;

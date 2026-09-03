@@ -16,7 +16,7 @@
 // difficulty for a human who is shown markers that do not exist and told by their
 // own party that everything is fine — costs it almost nothing.
 
-import { createRun, tick, logMarker, trueLogCount, debrief, activatePylon, LOG_RADIUS, PYLON_RADIUS, FULL_DRAIN_AT } from "../src/state.js";
+import { createRun, tick, logMarker, trueLogCount, debrief, activatePylon, callCompanion, LOG_RADIUS, PYLON_RADIUS, FULL_DRAIN_AT } from "../src/state.js";
 import { createPercept, updatePercept } from "../src/percept.js";
 import { findPath, worldToCell, cellToWorld, floodFill, GRID } from "../src/world.js";
 
@@ -59,6 +59,7 @@ function playRun(seed, policy, difficulty = "standard") {
   const cooldown = new Map(); // pylon id -> sim time it becomes selectable again
   let path = null;
   let goal = null;
+  let waitingAt = null; // which pylon we are holding, and until when
   let goalKind = null;
   let repath = 0;
 
@@ -212,7 +213,18 @@ function playRun(seed, policy, difficulty = "standard") {
   while (sim.status === "playing") {
     guard();
     repath -= DT;
-    if (!goal || repath <= 0) {
+    // HOLD THE PRIME. The bot re-decides its goal every second, which was
+    // harmless when a pylon fired the instant you stood in it — and fatal once
+    // it takes two: it would set hands on a pylon, call somebody, then wander
+    // off after a marker before they arrived, over and over, never firing one.
+    // A player waiting for help does not stroll away; nor does this.
+    // `goal &&` matters: the pylon branch nulls the goal when it gives up, and
+    // without that guard this held a stale wait with nothing to measure
+    // against and dereferenced null on the next line.
+    const holding = goal && waitingAt && sim.time <= waitingAt.until
+      && !sim.pylons.find((p) => p.id === waitingAt.id)?.spent;
+    if (holding) repath = Math.max(repath, 0.1);
+    if (!holding && (!goal || repath <= 0)) {
       const g = pickGoal();
       if (!goal || g.kind !== goalKind || dist(g.target, goal) > 1) {
         goal = g.target;
@@ -228,15 +240,46 @@ function playRun(seed, policy, difficulty = "standard") {
       continue;
     }
 
-    // A pylon fires the moment somebody is standing in it, once, and is then
-    // dead. There is nothing to wait for and nothing to ration — the only
-    // decision is when to spend it and who is close enough to catch it, and the
-    // bot's version of that is simply "walk in".
+    // A pylon takes TWO pairs of hands, and since cohesion nobody follows you
+    // any more — so "walk in and press it" is no longer a policy, it is a way
+    // to waste the basin's scarcest resource. The bot has to do what a player
+    // has to do: get someone to come.
+    //
+    // This is the change that made the difference. Before it the deceived bot
+    // won 0% of standard seeds, not because the deception got harder but
+    // because it could not reach relief at all: it primed pylon after pylon
+    // alone and nobody ever joined. A policy that ignores a verb the game
+    // requires is not measuring difficulty, it is measuring its own blind spot.
     if (goalKind === "pylon" && dist(goal, sim.player) < PYLON_RADIUS * 0.6) {
+      const helper = sim.companions.find(
+        (c) => !c.hallucinating && dist(c, sim.player) <= PYLON_RADIUS,
+      );
+      if (helper) {
+        // Somebody is already in the light. Both sets of hands, and it fires.
+        activatePylon(sim);
+        activatePylon(sim, helper);
+        step({ move: { x: 0, z: 0 }, yaw: sim.player.yaw });
+        cooldown.set(goal.id, sim.time + 25);
+        waitingAt = null;
+        goal = null;
+        continue;
+      }
+      // Nobody here. Set hands on it, call the nearest mind that still answers,
+      // and hold the spot while they walk over. The call refuses silently when
+      // it is recharging, which costs nothing.
       activatePylon(sim);
+      const mate = sim.companions
+        .filter((c) => !c.hallucinating)
+        .sort((a, b) => dist(a, sim.player) - dist(b, sim.player))[0];
+      if (mate) callCompanion(sim, mate.id);
       step({ move: { x: 0, z: 0 }, yaw: sim.player.yaw });
-      cooldown.set(goal.id, sim.time + 25);
-      goal = null;
+      // Wait, but not forever: PRIME_WINDOW is what the prime is worth.
+      if (!waitingAt || waitingAt.id !== goal.id) waitingAt = { id: goal.id, until: sim.time + 14 };
+      if (sim.time > waitingAt.until) {
+        cooldown.set(goal.id, sim.time + 40);
+        waitingAt = null;
+        goal = null;
+      }
       continue;
     }
 
@@ -280,13 +323,27 @@ function playRun(seed, policy, difficulty = "standard") {
     }
     step({ move: { x: mx, z: mz }, run: !lied, yaw });
 
-    // Camp goal with the survey done: the win check needs bodies at camp, and the
-    // companions arrive by following, so just keep standing there.
+    // EXTRACTION IS AN ACT NOW, NOT AN ARRIVAL. The win check needs the lead
+    // plus two more bodies within 9m of camp. That used to happen by itself,
+    // because the party followed you home; with cohesion nobody follows, so a
+    // bot that walks to camp and waits stands there until the run dissolves
+    // with the whole survey complete in its pocket. That was the real cause of
+    // the deceived rows collapsing — not difficulty, an unreachable win
+    // condition. It has to call its crew in, exactly as a player must.
     if (goalKind === "camp" && dist(sim.world.camp, sim.player) < 4) {
+      const home = sim.party.filter((c) => dist(c, sim.world.camp) <= 9).length;
+      if (home < 3) {
+        // Nearest first, and only minds that still answer. A refused call costs
+        // nothing, so this can be attempted every tick.
+        const wanted = sim.companions
+          .filter((c) => !c.hallucinating && dist(c, sim.world.camp) > 9)
+          .sort((a, b) => dist(a, sim.world.camp) - dist(b, sim.world.camp))[0];
+        if (wanted) callCompanion(sim, wanted.id);
+      }
       step({ move: { x: 0, z: 0 }, yaw });
     }
   }
-  return debrief(sim);
+  return { ...debrief(sim), draws: sim.stats.draws || 0, pylonsLeft: sim.pylons.filter((p) => !p.spent).length };
 }
 
 const dist = (a, b) => Math.hypot(a.x - b.x, a.z - b.z);
@@ -334,6 +391,7 @@ summarise("gentle/care", gentle);
 console.log("");
 const deceived = [];
 for (let seed = 1; seed <= Math.min(SEEDS, 20); seed++) deceived.push(playRun(seed, "deceived"));
+if (process.env.DRAW_DEBUG) console.log("deceived pylon draws per run:", deceived.map((r) => r.draws ?? "?").join(","));
 const d = summarise("deceived", deceived);
 const deceivedBleak = [];
 for (let seed = 1; seed <= Math.min(SEEDS, 20); seed++) deceivedBleak.push(playRun(seed, "deceived", "bleak"));

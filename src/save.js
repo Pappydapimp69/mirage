@@ -17,7 +17,8 @@
 //     options (dbh#E4, wrong-sky#E2). And an ended run is never saved, so a
 //     "Resume" can't drop you back onto the frame you already lost.
 
-import { createRun } from "./state.js?v=mirage-0.11.2";
+import { createRun } from "./state.js?v=mirage-0.13.2";
+import { buildCamp, CAMP_SEED } from "./camp.js?v=mirage-0.13.2";
 
 export const SAVE_KEY = "mirage:run";
 // Bumped whenever the shape below changes incompatibly. A save from an older
@@ -29,7 +30,20 @@ export const SAVE_KEY = "mirage:run";
 // two keys, and the first `sim.stats.falseCrafts += 1` would write NaN — which
 // then rides silently into the debrief. Adding a counter to a serialised bag of
 // counters is a schema change even though nothing was renamed or removed.
-export const SAVE_VERSION = 2;
+// v4: the camp is a world, not a seed. The camp's map cannot be regenerated
+// from a seed — it is authored — so a save taken on it now rebuilds through
+// buildCamp(). Before this, resuming a camp run silently handed the player a
+// BASIN generated from the sentinel seed, with their camp positions pasted onto
+// it. The tutorial autosaves every five seconds, so any player who quit part
+// way through the walk in and pressed Resume got that.
+//
+// v3: cohesion. Following was replaced by a chain, a periodic ping and a CALL
+// verb, all of which keep per-character deadlines (wanderUntil, pingAt/Until,
+// summonBy/Until, the two call cadences). `wanderUntil` gates three rng draws,
+// so a v2 snapshot restored without it re-rolls on a different tick and the
+// resumed run silently forks — which is precisely how the divergence test
+// caught it.
+export const SAVE_VERSION = 4;
 
 const store = () => (typeof localStorage === "undefined" ? null : localStorage);
 
@@ -66,7 +80,10 @@ function packCharacter(c) {
     drain: c.drain, stoic: c.stoic, chatty: c.chatty, wander: c.wander, selfCare: c.selfCare,
     aliveTime: c.aliveTime,
     goalKind: c.goalKind,
-    goal: c.goal ? { x: c.goal.x, z: c.goal.z } : null,
+    // `label` rides along: a hallucinated goal carries the NAME of the marker a
+    // gone mind believes it is walking to, and dropping it changed what they
+    // said they were doing.
+    goal: c.goal ? { x: c.goal.x, z: c.goal.z, label: c.goal.label ?? null } : null,
     fetchItemId: c.fetchItemId ?? null,
     // These three are THROTTLE COUNTDOWNS, and dropping them was a real bug
     // the divergence test caught: they decide WHICH TICK chatter and
@@ -78,6 +95,39 @@ function packCharacter(c) {
     remarkCooldown: c.remarkCooldown ?? 0,
     repathTimer: c.repathTimer ?? 0,
     facing: c.facing ?? 0,
+    // Cohesion state. Same rule as the throttle countdowns above, and it broke
+    // the divergence test the same way: `wanderUntil` decides WHICH TICK a
+    // companion draws three rng values to pick somewhere new to stroll, so a
+    // resume with it reset re-rolls on a different tick and every other mind
+    // sharing that tick shifts. The call cadences and the ping deadlines gate
+    // movement rather than draws, but they decide where somebody IS, which
+    // decides what they encounter, which decides everything downstream.
+    wanderGoal: c.wanderGoal ? { x: c.wanderGoal.x, z: c.wanderGoal.z } : null,
+    wanderUntil: c.wanderUntil ?? 0,
+    pingAt: c.pingAt ?? 0,
+    pingUntil: c.pingUntil ?? 0,
+    summonBy: c.summonBy ?? null,
+    summonUntil: c.summonUntil ?? 0,
+    answerReadyAt: c.answerReadyAt ?? 0,
+    callReadyAt: c.callReadyAt ?? 0,
+    // Two latches that were never saved and never noticed, because until
+    // cohesion they were only ever set on paths a resumed run happened to
+    // re-enter immediately. `goneAnnounced` is the load-bearing one: it gates
+    // `remarkCooldown = 0`, which gates an rng draw.
+    goneAnnounced: !!c.goneAnnounced,
+    wasAway: c.wasAway ?? null,
+    // THE LOST-DRIFT STATE. `lostSince` is the worst offender this file has
+    // held: the dwell test is `sim.time - c.lostSince < LOST_DWELL`, and with
+    // it dropped that reads `sim.time - undefined`, which is NaN, and NaN < x
+    // is false — so a resumed hallucinating mind skipped its entire dwell,
+    // took a different branch, and drew a different number of rng values. A
+    // missing number that silently becomes NaN does not throw and does not
+    // fail a round-trip check; it just quietly changes what happens next.
+    lostSince: c.lostSince ?? null,
+    lostStallUntil: c.lostStallUntil ?? 0,
+    // Only used to keep a gone mind from repeating itself, but it changes
+    // which line `pick` lands on, so two runs disagree about what was said.
+    lastGoneLine: c.lastGoneLine ?? null,
     // Saved rather than recomputed for the same reason: a null path re-paths
     // on a different tick than a live one, which moves the draws again.
     // GRID CELLS (cx, cz), not world coordinates. This mapped x/z for a while,
@@ -112,12 +162,24 @@ function applyCharacter(c, s) {
   c.microUntil = s.microUntil || 0;
   c.microCooldownUntil = s.microCooldownUntil || 0;
   c.vouchUntil = s.vouchUntil || 0;
+  // `goalKind` and `goal` are NOT companion-only. A hallucinating LEAD is
+  // driven by the same lost-drift code as a companion — they get a goalKind of
+  // "hallucinating" and a drift goal — and leaving them out of the restore
+  // meant a resumed lead re-entered that branch from scratch and drew three
+  // fresh rng values the original had already spent. Every other mind sharing
+  // that tick then shifted, and the run forked. They were inside the
+  // !isPlayer guard because they were assumed to be party-AI state; they are
+  // hallucination state, which the lead very much has.
+  c.goalKind = s.goalKind;
+  c.goal = s.goal ? { x: s.goal.x, z: s.goal.z, label: s.goal.label ?? null } : null;
+  // Same reasoning as goalKind: the lead hallucinates too, so the lost-drift
+  // clock is not companion-only state.
+  c.lostSince = s.lostSince ?? null;
+  c.lostStallUntil = s.lostStallUntil ?? 0;
   if (!c.isPlayer) {
     c.drain = s.drain; c.stoic = s.stoic; c.chatty = s.chatty;
     c.wander = s.wander; c.selfCare = s.selfCare;
     c.aliveTime = s.aliveTime;
-    c.goalKind = s.goalKind;
-    c.goal = s.goal ? { x: s.goal.x, z: s.goal.z } : null;
     c.fetchItemId = s.fetchItemId ?? null;
     c.inventory = s.inventory ? s.inventory.map((slot) => ({ ...slot })) : [];
     if (s.known) c.known = { pylons: new Set(s.known.pylons), monoliths: new Set(s.known.monoliths) };
@@ -125,7 +187,21 @@ function applyCharacter(c, s) {
     c.repathTimer = s.repathTimer ?? 0;
     c.facing = s.facing ?? 0;
     c.path = s.path ? s.path.map((n) => ({ cx: n.cx, cz: n.cz })) : null;
+    c.wanderGoal = s.wanderGoal ? { x: s.wanderGoal.x, z: s.wanderGoal.z } : null;
+    c.wanderUntil = s.wanderUntil ?? 0;
+    c.pingAt = s.pingAt ?? 0;
+    c.pingUntil = s.pingUntil ?? 0;
+    c.summonBy = s.summonBy ?? null;
+    c.summonUntil = s.summonUntil ?? 0;
+    c.answerReadyAt = s.answerReadyAt ?? 0;
+    c.goneAnnounced = !!s.goneAnnounced;
+    c.wasAway = s.wasAway ?? null;
+    c.lastGoneLine = s.lastGoneLine ?? null;
   }
+  // The lead calls; companions answer. `callReadyAt` is therefore the ONLY one
+  // of these that belongs to the player too, and it sits outside the
+  // !isPlayer guard for that reason.
+  c.callReadyAt = s.callReadyAt ?? 0;
 }
 
 /** Flags for world features, keyed by id — positions come back from the seed. */
@@ -189,6 +265,13 @@ export function serializeRun(sim) {
     // re-phases every sighting roll after a resume.
     sightTimer: sim.sightTimer ?? 0,
     lastDt: sim.lastDt ?? 0,
+    // Camp-only flags. Not cosmetic: `noDrain` decides whether a whole class of
+    // per-tick rng draws happens at all, and the other three decide which verbs
+    // the prompt resolver will even offer.
+    noDrain: !!sim.noDrain,
+    canClearMoss: !!sim.canClearMoss,
+    callUnlocked: sim.callUnlocked !== false,
+    reachedTrainer: !!sim.reachedTrainer,
   };
 }
 
@@ -200,12 +283,29 @@ export function serializeRun(sim) {
  */
 export function deserializeRun(data) {
   if (!data || data.v !== SAVE_VERSION) return null;
+  // THE CAMP IS NOT A SEED. Every basin is a pure function of its seed and
+  // regenerates exactly; the camp is hand-placed and regenerates as nothing at
+  // all. Passing the sentinel through to generateWorld produced a perfectly
+  // valid BASIN and pasted the saved camp positions onto it — no error, no
+  // warning, just a resume into somewhere the player had never been. The seed
+  // is the routing key because it is already in every payload at every version,
+  // which is exactly what camp.js said the sentinel was for.
+  const camp = data.seed === CAMP_SEED;
+  const world = camp ? buildCamp() : null;
   const sim = createRun({
     seed: data.seed,
     difficulty: data.difficulty,
     level: data.level,
     campaignLength: data.campaignLength,
+    world,
   });
+  if (camp) {
+    sim.trainer = world.trainer;
+    sim.noDrain = !!data.noDrain;
+    sim.canClearMoss = !!data.canClearMoss;
+    sim.callUnlocked = data.callUnlocked !== false;
+    sim.reachedTrainer = !!data.reachedTrainer;
+  }
 
   const byId = new Map(sim.party.map((c) => [c.id, c]));
   for (const s of data.party) {
@@ -334,7 +434,7 @@ export const SETTINGS_KEY = "mirage:settings";
 // the save payload became a cross-slot leak the moment the game grew slots.
 // Settings rather than the run payload because progress has to survive
 // clearSave(), which every new run calls.
-const DEFAULT_SETTINGS = { volume: 0.7, muted: false, difficulty: "standard", coop: "solo", fov: 90, tutorial: { done: [], current: 0 } };
+const DEFAULT_SETTINGS = { volume: 0.7, muted: false, difficulty: "standard", coop: "solo", fov: 78, tutorial: { done: [], current: 0 } };
 
 /**
  * A defaults object nobody can corrupt. `{ ...DEFAULT_SETTINGS }` is a SHALLOW

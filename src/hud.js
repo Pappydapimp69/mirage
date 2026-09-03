@@ -6,8 +6,10 @@
 // the one hallucinating. The only place a real number is ever printed is the
 // debrief, after the run is over.
 
-import { perceivedYaw, rosterRead, distortion, filterReport, perceivedWorldItems, perceivedInventory, chorusEcho, believedKinds } from "./percept.js?v=mirage-0.11.2";
-import { LOG_RADIUS, PYLON_RADIUS, TIME_LIMIT, discoveredCount, ITEM_PICKUP_RADIUS, ITEM_INFO, gatherTarget, GATHER_HOLD_TIME, previewCraft, claimedEntryAt, pylonAt } from "./state.js?v=mirage-0.11.2";
+import { perceivedYaw, rosterRead, distortion, filterReport, perceivedWorldItems, perceivedInventory, chorusEcho, believedKinds } from "./percept.js?v=mirage-0.13.2";
+import { LOG_RADIUS, PYLON_RADIUS, TIME_LIMIT, discoveredCount, ITEM_PICKUP_RADIUS, ITEM_INFO, gatherTarget, GATHER_HOLD_TIME, previewCraft, claimedEntryAt, pylonAt,
+  mossedAt,
+} from "./state.js?v=mirage-0.13.2";
 
 const COMPASS = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
 
@@ -286,6 +288,19 @@ export function createHud(sim, percept, opts = {}) {
     // can be permanently lost by walking away from it, and it only works once.
     // Believed, not real: the prompt must appear over a phantom pylon too, or
     // its absence tells the lead they are hallucinating.
+    // ABOVE the pylon rung, because a mossed pylon is where a pylon would be
+    // and the two can never both apply — pylonAt hides mossed ones. Without a
+    // rung of its own the prompt went blank at a thing the player is standing
+    // right on top of, which reads as the game not seeing it.
+    const mossy = mossedAt(sim, actor);
+    if (mossy && sim.status === "playing") {
+      els.text.textContent = sim.canClearMoss
+        ? "Scrape the moss off"
+        : "Something under the moss — it will not shift";
+      els.prompt.classList.add("show");
+      els.fill.style.width = "0%";
+      return;
+    }
     const pylon = pylonAt(sim, actor) || believedPylonAt(viewer, sim, actor);
     if (pylon && sim.status === "playing") {
       const together = sim.party.filter(
@@ -432,8 +447,8 @@ export function createHud(sim, percept, opts = {}) {
 
   function setHints(scheme) {
     const text = {
-      keyboard: "WASD move · Shift run · E survey/pick up, hold to gather · Z cycle item · X use item · V drop · Q/R select · B give · C craft · 1–5 check in · Shift+1–5 dose · Esc pause",
-      gamepad: "Stick move · [A] survey/pick up, hold to gather · [RT] cycle item · [B] use item · D-pad Up craft · D-pad Down drop · D-pad Right give · [X] check in · [Y] dose · [LB]/[RB] select · [Start] pause",
+      keyboard: "WASD move · Shift run · E survey/pick up, hold to gather · Z cycle item · X use item · V drop · Q/R select · B give · T call over · C craft · 1–5 check in · Shift+1–5 dose · Esc pause",
+      gamepad: "Stick move · [A] survey/pick up, hold to gather · [RT] cycle item · [B] use item · D-pad Up craft · D-pad Down drop · D-pad Right give · D-pad Left call over · [X] check in · [Y] dose · [LB]/[RB] select · [Start] pause",
       touch: "Left half steers · right half looks · buttons bottom-right",
     }[scheme] || "";
     paintHint(el.hints, text);
