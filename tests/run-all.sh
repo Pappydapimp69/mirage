@@ -23,6 +23,10 @@ echo "== kinds (the four that used to be static) =="
 node tests/kinds.test.mjs
 echo
 
+echo "== triggers (does the index fire on the mistakes it was built from?) =="
+node tests/triggers.mjs
+echo
+
 echo "== camp (the one authored map earns its guarantees) =="
 node tests/camp.mjs
 echo
