@@ -19,7 +19,7 @@ import {
   COMPANION_ITEM_CAP, OFFER_RADIUS,
   groupWith,
 } from "../src/state.js";
-import { generateWorld, validate, findPath, isBlockedAt, GRID, ITEM_COUNT, ITEM_KINDS, TREE_COUNT, STONE_COUNT } from "../src/world.js";
+import { generateWorld, validate, findPath, isBlockedAt, cellToWorld, GRID, ITEM_COUNT, ITEM_KINDS, TREE_COUNT, STONE_COUNT } from "../src/world.js";
 import {
   createPercept, updatePercept, perceivedMonoliths, perceivedPylons, perceivedCompanions,
   perceivedYaw, rosterRead, filterReport, distortion,
@@ -479,7 +479,28 @@ check("high selfCare breaks off for a known pylon before BRITTLE", () => {
   const sim = createRun({ seed: 95 });
   const p = sim.pylons[0];
   const c = sim.companions[0];
-  const away = { x: p.x + 30, z: p.z + 4 };
+  // FOUND, not assumed. This read `{ x: p.x + 30, z: p.z + 4 }`, which is a bet
+  // that there are 30 walkable units due east of pylon 0 — true on the basin
+  // this seed used to make, and off the map entirely on the larger one, where
+  // the party was teleported outside the rim and could not move at all. Ask the
+  // world instead: the nearest walkable cell about 30 units out that can
+  // actually path back to the pylon.
+  const away = (() => {
+    const g = sim.world.grid;
+    let best = null, bestErr = Infinity;
+    for (let cz = 1; cz < g - 1; cz++) {
+      for (let cx = 1; cx < g - 1; cx++) {
+        if (sim.world.blocked[cz * g + cx]) continue;
+        const w = cellToWorld(cx, cz, g);
+        const err = Math.abs(Math.hypot(w.x - p.x, w.z - p.z) - 30);
+        if (err >= bestErr) continue;
+        if (!findPath(sim.world, { cx, cz }, { cx: p.cx, cz: p.cz })) continue;
+        best = w; bestErr = err;
+      }
+    }
+    if (!best) throw new Error("no walkable spot ~30 units from pylon 0");
+    return best;
+  })();
   for (const m of sim.party) { m.x = away.x; m.z = away.z; }
   // `spent`, not `charge` — charge is vestigial since pylons became one-shot,
   // so this guard had quietly stopped working. It matters more now: at the
@@ -498,7 +519,28 @@ check("low selfCare only breaks off at BRITTLE, same as before this feature exis
   const sim = createRun({ seed: 96 });
   const p = sim.pylons[0];
   const c = sim.companions[0];
-  const away = { x: p.x + 30, z: p.z + 4 };
+  // FOUND, not assumed. This read `{ x: p.x + 30, z: p.z + 4 }`, which is a bet
+  // that there are 30 walkable units due east of pylon 0 — true on the basin
+  // this seed used to make, and off the map entirely on the larger one, where
+  // the party was teleported outside the rim and could not move at all. Ask the
+  // world instead: the nearest walkable cell about 30 units out that can
+  // actually path back to the pylon.
+  const away = (() => {
+    const g = sim.world.grid;
+    let best = null, bestErr = Infinity;
+    for (let cz = 1; cz < g - 1; cz++) {
+      for (let cx = 1; cx < g - 1; cx++) {
+        if (sim.world.blocked[cz * g + cx]) continue;
+        const w = cellToWorld(cx, cz, g);
+        const err = Math.abs(Math.hypot(w.x - p.x, w.z - p.z) - 30);
+        if (err >= bestErr) continue;
+        if (!findPath(sim.world, { cx, cz }, { cx: p.cx, cz: p.cz })) continue;
+        best = w; bestErr = err;
+      }
+    }
+    if (!best) throw new Error("no walkable spot ~30 units from pylon 0");
+    return best;
+  })();
   for (const m of sim.party) { m.x = away.x; m.z = away.z; }
   // `spent`, not `charge` — charge is vestigial since pylons became one-shot,
   // so this guard had quietly stopped working. It matters more now: at the
@@ -2344,7 +2386,28 @@ check("a brittle companion breaks formation for a pylon they remember", () => {
   const c = sim.companions[0];
   // The party is out in the basin, well away from relief, but this companion has
   // been near this pylon before and remembers it.
-  const away = { x: p.x + 30, z: p.z + 4 };
+  // FOUND, not assumed. This read `{ x: p.x + 30, z: p.z + 4 }`, which is a bet
+  // that there are 30 walkable units due east of pylon 0 — true on the basin
+  // this seed used to make, and off the map entirely on the larger one, where
+  // the party was teleported outside the rim and could not move at all. Ask the
+  // world instead: the nearest walkable cell about 30 units out that can
+  // actually path back to the pylon.
+  const away = (() => {
+    const g = sim.world.grid;
+    let best = null, bestErr = Infinity;
+    for (let cz = 1; cz < g - 1; cz++) {
+      for (let cx = 1; cx < g - 1; cx++) {
+        if (sim.world.blocked[cz * g + cx]) continue;
+        const w = cellToWorld(cx, cz, g);
+        const err = Math.abs(Math.hypot(w.x - p.x, w.z - p.z) - 30);
+        if (err >= bestErr) continue;
+        if (!findPath(sim.world, { cx, cz }, { cx: p.cx, cz: p.cz })) continue;
+        best = w; bestErr = err;
+      }
+    }
+    if (!best) throw new Error("no walkable spot ~30 units from pylon 0");
+    return best;
+  })();
   for (const m of sim.party) { m.x = away.x; m.z = away.z; }
   // Spend every other pylon, so the only relief in the world is `p` — otherwise
   // the party's resting spot may happen to fall inside a different one.
@@ -2997,6 +3060,13 @@ check("monster flicker fires only while hallucinating, holds its pick, and clear
   sim.player.x = 0; sim.player.z = 0;
   const near = sim.companions[0];
   near.x = 5; near.z = 0; // well within MONSTER_SIGHT
+  // FACE THEM, explicitly. The flicker only picks a companion who is ON SCREEN,
+  // and this test used to inherit whatever yaw `createRun` happened to give the
+  // lead for this seed — which is world-dependent, so a change to the map moved
+  // the camera off the one companion the test stands up and the pick came back
+  // null. The view cone is under test here; where the camera starts is not.
+  // percept.js bearings are atan2(-dx, -dz); match that, do not guess a sign.
+  sim.player.yaw = Math.atan2(-(near.x - sim.player.x), -(near.z - sim.player.z));
   for (let i = 1; i < sim.companions.length; i++) { sim.companions[i].x = 9999; sim.companions[i].z = 9999; }
   const percept = createPercept(sim.player);
 

@@ -43,7 +43,16 @@ export const SAVE_KEY = "mirage:run";
 // so a v2 snapshot restored without it re-rolls on a different tick and the
 // resumed run silently forks — which is precisely how the divergence test
 // caught it.
-export const SAVE_VERSION = 4;
+//
+// v5: the basin doubled in area (GRID 46 -> 65, mirage-0.15.0). A basin is
+// never serialised — it is regenerated from its seed — so this is the one
+// schema change where the PAYLOAD is unchanged and the save is still worthless:
+// every seed now produces a different world, and a v4 snapshot would restore a
+// player's stored position into a basin that has different rock under it.
+// Position, path nodes and feature ids would all point at a map that no longer
+// exists. The version is the only thing that can catch it, because nothing in
+// the payload itself looks wrong.
+export const SAVE_VERSION = 5;
 
 const store = () => (typeof localStorage === "undefined" ? null : localStorage);
 

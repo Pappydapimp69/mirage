@@ -198,20 +198,20 @@ check("the camp is byte-identical across builds", () => {
   eq(a.heightAt(7, 9), b.heightAt(7, 9), "the camp's floor differs between builds");
 });
 
-// THIS USED TO ASSERT THE OPPOSITE. The camp was smaller than a basin for its
-// whole life and this pinned that; the owner then asked for twice the area,
-// which puts it past a basin (~3235 open cells against ~1700). The assertion is
-// inverted rather than deleted, because the number it guards is still load-
-// bearing in the other direction: the camp is the tutorial map, it is walked
-// end to end under an objective timer, and something has to notice if it
-// silently grows again.
-check("the camp is larger than a basin, deliberately, and bounded", () => {
+// THIS ASSERTION HAS NOW FLIPPED TWICE, AND THE HISTORY IS THE POINT.
+// The camp was smaller than a basin for its whole life and that was pinned
+// here. 0.14.0 doubled the camp on request and it became larger, so the
+// assertion was inverted rather than deleted — and a tension was filed saying
+// the tutorial arena should not out-scale the game's real maps. 0.15.0 doubled
+// the basin, which settles that fork the right way round: camp ~3235 open
+// cells, basin ~3437. Both maps grew; the RELATION is back where it started.
+check("the camp is smaller than a basin, and not cramped", () => {
   const camp = buildCamp();
   let open = 0;
   for (let i = 0; i < camp.blocked.length; i++) if (!camp.blocked[i]) open++;
   const basinOpen = (() => { const b = generateWorld(4242); let n = 0; for (let i = 0; i < b.blocked.length; i++) if (!b.blocked[i]) n++; return n; })();
-  assert(open > basinOpen, `the camp (${open} cells) is no longer larger than a basin (${basinOpen}) — it was doubled on purpose`);
-  assert(open < basinOpen * 2.5, `the camp is ${open} cells against a basin's ${basinOpen} — that is a third enlargement nobody asked for`);
+  assert(open < basinOpen, `the camp (${open} cells) is not smaller than a basin (${basinOpen}) — the tutorial arena is out-scaling the real maps again`);
+  assert(open > basinOpen * 0.7, `the camp is ${open} cells against a basin's ${basinOpen} — it has fallen well behind and the walk in will feel cramped`);
   assert(longestWalk(camp) >= 30, `the longest walk in camp is ${longestWalk(camp).toFixed(1)}m`);
 });
 

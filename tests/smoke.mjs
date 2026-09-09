@@ -167,7 +167,15 @@ function assert(cond, msg) {
   // --- drive the sim on ITS OWN CLOCK -------------------------------------
   const walked = await page.evaluate(() => {
     const before = { x: window.__mirage.sim.player.x, z: window.__mirage.sim.player.z };
-    const t = window.__mirage.advance(8, { move: { x: 0, z: -1 }, run: true });
+    // WALKING, not running. Cohesion removed following: companions match a
+    // lead who WALKS (4.6 units/sec against 4.3) and cannot match one who runs
+    // (7.4). This advanced with `run: true` and still passed, because on the
+    // 46-cell basin the rim stopped a sprint after ~30 units and the party
+    // caught up against the wall. On the 65-cell basin there is room to
+    // actually run away, and 8 seconds of it put the whole party 48-66 units
+    // back — which is the design working, not a regression. The keep-up
+    // assertion below is about the walking contract, so walk.
+    const t = window.__mirage.advance(8, { move: { x: 0, z: -1 } });
     const s = window.__mirage.sim;
     return {
       simTime: t,
@@ -181,7 +189,37 @@ function assert(cond, msg) {
   // The first 5 minutes of a basin are a grace window (LUCIDITY_GRACE, state.js)
   // — nobody's meter moves yet at 8 sim-seconds in, on purpose.
   assert(walked.lucidity === 100, `lucidity moved inside the opening grace window: ${walked.lucidity}`);
-  assert(walked.companionSpread.filter((d) => d < 22).length >= 3, `party did not keep up: ${walked.companionSpread}`);
+  // NOT "did they keep up". Following is gone: companions walk their own
+  // errands and only come when CALLED, so a lead who walks off leaves them
+  // behind BY DESIGN. This asserted 3 of 5 within 22 units and passed only
+  // because the 46-cell basin's rim stopped the lead after ~30 units; on the
+  // 65-cell one the same 8 seconds opens a 27-38 unit gap and the assertion
+  // was measuring the wall, not the party. What cohesion actually promises is
+  // that the CALL closes the gap, so that is what is checked.
+  assert(walked.companionSpread.every((d) => Number.isFinite(d) && d < 200),
+    `a companion is nowhere near the basin: ${walked.companionSpread}`);
+  // The distance alone is NOT enough to assert on: the ping cadence brings a
+  // companion back on its own, so "they got closer over 12 seconds" passes with
+  // the call deleted — measured, by deleting it. The summon LATCH is the call's
+  // own effect and nothing else sets it, so assert that first and the closing
+  // second.
+  const called = await page.evaluate(() => {
+    const M = window.__mirage, s = M.sim;
+    const id = s.companions[M.selected].id;
+    const at = () => { const c = s.companions.find((x) => x.id === id); return { c, d: Math.hypot(c.x - s.player.x, c.z - s.player.z) }; };
+    const before = at();
+    const latchBefore = before.c.summonUntil ?? 0;
+    M.act(M.ACTIONS.CALL);
+    const latchAfter = before.c.summonUntil ?? 0;
+    const summonBy = before.c.summonBy ?? null;
+    M.advance(12, { move: { x: 0, z: 0 } });
+    return { id, before: before.d, after: at().d, latchBefore, latchAfter, summonBy, now: s.time };
+  });
+  assert(called.latchAfter > called.now && called.latchAfter > called.latchBefore,
+    `CALL did not summon ${called.id}: summonUntil ${called.latchBefore} -> ${called.latchAfter} at t=${called.now.toFixed(1)}`);
+  assert(called.summonBy !== null, `CALL summoned ${called.id} without recording who called`);
+  assert(called.after < called.before - 5,
+    `${called.id} was summoned but did not come in: ${called.before.toFixed(1)} -> ${called.after.toFixed(1)} units`);
 
   if (glOk) {
     const drew = await page.evaluate(() => {
@@ -471,6 +509,14 @@ function assert(cond, msg) {
     s.inventory.length = 0;
     s.inventory.push({ id: "phantom-flare", real: false, claimedKind: "flare", kind: null });
     const c = s.companions[M.selected];
+    // STAND THEM BACK UP. Tests 1 and 2 teleported this companion onto the
+    // lead; the frames those two spend pressing keys and clicking are frames
+    // the companion spends walking its own errand, so by here it had wandered
+    // out of hand-over range and the offer refused with "too far". Inheriting
+    // another test's teleport is the same stale-precondition bug as assuming a
+    // spot 30 units east of a pylon is walkable — state the precondition.
+    c.x = s.player.x;
+    c.z = s.player.z;
     c.hallucinating = false;
     const before = s.stats.phantomsRevealed;
     M.act(M.ACTIONS.OFFER_ITEM);

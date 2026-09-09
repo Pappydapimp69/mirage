@@ -29,17 +29,38 @@ short on purpose.
 
 ## Open — predicted, unconfirmed
 
-_(empty)_
+- [ ] `beliefs` (`{ claimedMarkers: [] }`) is on every companion and is NOT in
+      the save payload at all — found while auditing `serializeRun` for live
+      references. Nothing forked because of it across 60 seeds, so it may hold
+      nothing that gates a draw, but "no fork on 60 seeds" is not "not save
+      state" — the two throttle countdowns that WERE save state also went years
+      unnoticed. Read what writes it before deciding.
 
 ## Open — found in passing, not yet fixed
+
+- [ ] **The balance harness's five oracle rows have gone degenerate.** On the
+      46-cell basin they read 137.3 / 137.2 / 131.3 / 131.9 / 140.7s with one
+      dissolved run each; on the 65-cell basin all five are byte-identical —
+      100% won, 207.0s, slips 0.0, party-seconds-lost 0. That is the exact
+      signature mirage#E22 records ("the harness returned BYTE-IDENTICAL results
+      for careful, reckless and bleak"), and it means those rows can no longer
+      tell two policies or two difficulties apart. Probable cause: `stride = 7`
+      sweep points scale with the grid, so the bot's lattice now covers the
+      bigger map more thoroughly and every seed completes cleanly inside the
+      300s grace window. The rows were already only descriptive — the file says
+      so — but they are now not even that.
 
 - [ ] The `.brain/` local store is gitignored and did NOT survive this
       session's container restart. Anything kept there is scratch in the
       strongest sense. That is why this file is committed.
-- [ ] `tests/balance.mjs` — the `deceived` bot at 17% against a 35% bar,
-      `deceived/bleak` at 0%. The owner's open difficulty decision, not a
-      defect; the structural bugs behind it were found and fixed. Do not tune
-      the constants they chose.
+- [ ] `tests/balance.mjs` — the `deceived` bot, the one row difficulty may be
+      read from, has gone from **17% to 0%** on the doubled basin, and its
+      `logged` from 5.2/6 to 1.9/6: it finds the markers and dissolves before it
+      can log them. Against an unchanged `TIME_LIMIT = 780` the basin went from
+      120m across to 169m. This is the owner's open difficulty decision, not a
+      defect, and the same standing rule applies — do not tune the constants
+      they chose. What is new is that the decision is now forced rather than
+      deferred: at 0% the row cannot get worse and can no longer be read.
 
 ## Denied — kept so it is not re-proposed
 

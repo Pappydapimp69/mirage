@@ -24,7 +24,7 @@
 // reachability from scratch and is asserted in the test suite — the fixup is
 // verified, not trusted.
 
-import { makeRng } from "./rng.js?v=mirage-0.14.0";
+import { makeRng } from "./rng.js?v=mirage-0.15.0";
 
 export const CELL = 2.6; // world units per grid cell
 /**
@@ -38,7 +38,7 @@ export const CELL = 2.6; // world units per grid cell
  * now take the grid explicitly or read it off the world, so this constant is
  * only ever the BASIN's answer.
  */
-export const GRID = 46;
+export const GRID = 65;
 export const MONOLITH_COUNT = 6;
 export const PYLON_COUNT = 5;
 export const ITEM_COUNT = 6;
@@ -115,7 +115,10 @@ const inBounds = (cx, cz, grid) => cx >= 0 && cz >= 0 && cx < grid && cz < grid;
 // renderer for terrain height and by the sim for "how deep in the fog are you".
 function makeHeightField(rng) {
   const lattice = [];
-  const LN = 12; // lattice resolution
+  // Lattice resolution, in cells-per-feature terms. It scales with the grid's
+  // SIDE, not its area: leaving it at 12 while the basin went 46 -> 65 would
+  // stretch the same twelve hills over twice the ground and flatten the floor.
+  const LN = 17;
   for (let i = 0; i <= LN; i++) {
     lattice.push([]);
     for (let j = 0; j <= LN; j++) lattice[i].push(rng());
@@ -152,7 +155,10 @@ function blockedGrid(rng) {
   }
 
   // Rock clusters: random-walk blobs. Local rule only — connectivity comes later.
-  const clusters = 26;
+  // COUNT scales with area (46^2 -> 65^2 is x2, so 26 -> 52); the blob LENGTH
+  // below is a shape and stays put. Scaling only the grid would have made a
+  // basin twice the size and half as rocky, which is emptier, not bigger.
+  const clusters = 52;
   for (let c = 0; c < clusters; c++) {
     let cx = rng.int(3, GRID - 4);
     let cz = rng.int(3, GRID - 4);
@@ -168,7 +174,9 @@ function blockedGrid(rng) {
   }
 
   // A couple of long ridges to break sightlines and make the area feel authored.
-  for (let r = 0; r < 3; r++) {
+  // Count scales with the area; LENGTH does not — a ridge's job is to break a
+  // SIGHTLINE, and sightlines are measured in world units, which did not change.
+  for (let r = 0; r < 6; r++) {
     const horiz = rng.chance(0.5);
     const fixed = rng.int(6, GRID - 7);
     const from = rng.int(3, GRID - 14);
@@ -257,7 +265,7 @@ export function generateWorld(seed = 1) {
 
   // CAMP sits off-centre so "return to camp" is a real navigation problem
   // rather than "walk to the middle".
-  const campSeed = { cx: rng.int(6, 14), cz: rng.int(GRID - 15, GRID - 7) };
+  const campSeed = { cx: rng.int(8, 20), cz: rng.int(GRID - 21, GRID - 10) };
   const camp = openNear(blocked, campSeed.cx, campSeed.cz);
   // Clear a small yard around camp. The party spawns in a fan behind the lead and
   // the opening shot looks out across the basin; a spire pressed against the
@@ -272,13 +280,17 @@ export function generateWorld(seed = 1) {
   // Scatter features with a minimum separation, biased away from CAMP so the
   // party has to actually travel.
   const picks = [];
-  const minSep = 6;
+  // Separations scale with the grid's SIDE (sqrt2), not its area — they are
+  // distances. Left at 6 and 9 on a 65-grid the same 27 features would sit as
+  // close together as before while the ground around them doubled, which reads
+  // as a crowd in a field.
+  const minSep = 8;
   const farEnough = (c) =>
     picks.every((p) => Math.hypot(p.cx - c.cx, p.cz - c.cz) >= minSep) &&
-    Math.hypot(camp.cx - c.cx, camp.cz - c.cz) >= 9;
+    Math.hypot(camp.cx - c.cx, camp.cz - c.cz) >= 13;
   let guard = 0;
   const totalPicks = MONOLITH_COUNT + PYLON_COUNT + ITEM_COUNT + TREE_COUNT + STONE_COUNT;
-  while (picks.length < totalPicks && guard++ < 6000) {
+  while (picks.length < totalPicks && guard++ < 9000) {
     const c = openNear(blocked, rng.int(2, GRID - 3), rng.int(2, GRID - 3));
     if (farEnough(c)) picks.push(c);
   }
