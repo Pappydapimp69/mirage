@@ -43,7 +43,7 @@ function sweepPoints(sim) {
           }
         }
       }
-      if (found) pts.push({ ...found, ...cellToWorld(found.cx, found.cz), visited: false });
+      if (found) pts.push({ ...found, ...cellToWorld(found.cx, found.cz, sim.world.grid), visited: false });
     }
   }
   return pts;
@@ -301,12 +301,13 @@ function playRun(seed, policy, difficulty = "standard") {
     // an empty array is a computed answer and must not trigger a recompute every
     // tick (see the same distinction in party.js).
     if (path === null) {
-      path = findPath(sim.world, worldToCell(sim.player.x, sim.player.z), worldToCell(goal.x, goal.z)) || [];
-      if (!path.length) path = [worldToCell(goal.x, goal.z)]; // already in the goal cell
+      const g = sim.world.grid;
+      path = findPath(sim.world, worldToCell(sim.player.x, sim.player.z, g), worldToCell(goal.x, goal.z, g)) || [];
+      if (!path.length) path = [worldToCell(goal.x, goal.z, g)]; // already in the goal cell
     }
     // Path exhausted: steer straight at the goal for the last few metres.
     const node = path[0];
-    const aim = node ? cellToWorld(node.cx, node.cz) : goal;
+    const aim = node ? cellToWorld(node.cx, node.cz, sim.world.grid) : goal;
     const dx = aim.x - sim.player.x;
     const dz = aim.z - sim.player.z;
     const len = Math.hypot(dx, dz) || 1;

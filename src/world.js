@@ -24,10 +24,21 @@
 // reachability from scratch and is asserted in the test suite — the fixup is
 // verified, not trusted.
 
-import { makeRng } from "./rng.js?v=mirage-0.13.2";
+import { makeRng } from "./rng.js?v=mirage-0.14.0";
 
 export const CELL = 2.6; // world units per grid cell
-export const GRID = 46; // cells per side
+/**
+ * Cells per side OF A BASIN.
+ *
+ * This is not "the grid size" — the camp has its own, larger one (camp.js
+ * CAMP_GRID), and every world already carries its own in `world.grid`. That
+ * field used to be decorative: it was written into the returned shape and
+ * nothing read it, while every consumer imported this constant instead. One
+ * truth in two homes, and only one of them would ever move. The helpers below
+ * now take the grid explicitly or read it off the world, so this constant is
+ * only ever the BASIN's answer.
+ */
+export const GRID = 46;
 export const MONOLITH_COUNT = 6;
 export const PYLON_COUNT = 5;
 export const ITEM_COUNT = 6;
@@ -66,15 +77,39 @@ const MONOLITH_NAMES = [
   "the Black Mouth",
 ];
 
-/** Grid <-> world helpers. Cell (0,0) is the NW corner; the grid is centred on the origin. */
-export function cellToWorld(cx, cz) {
-  return { x: (cx - GRID / 2 + 0.5) * CELL, z: (cz - GRID / 2 + 0.5) * CELL };
-}
-export function worldToCell(x, z) {
-  return { cx: Math.floor(x / CELL + GRID / 2), cz: Math.floor(z / CELL + GRID / 2) };
+/**
+ * `grid` is REQUIRED on every helper that needs it, and checked.
+ *
+ * The tempting shape is `grid = GRID` as a default. It is the wrong shape here:
+ * a call site that forgets the argument would then place a camp feature using
+ * the BASIN's grid, which is not an error anywhere — it is a valid number that
+ * puts the thing tens of metres from where the map says it is, and the only
+ * symptom is a world that looks subtly wrong. Throwing turns every missed call
+ * site into a stack trace at the first frame instead.
+ */
+function needGrid(grid, who) {
+  if (!Number.isInteger(grid) || grid <= 0) {
+    throw new Error(`${who}: grid must be a positive integer, got ${grid} — pass the world's own grid (world.grid), not a default`);
+  }
+  return grid;
 }
 
-const inBounds = (cx, cz) => cx >= 0 && cz >= 0 && cx < GRID && cz < GRID;
+/** Grid <-> world helpers. Cell (0,0) is the NW corner; the grid is centred on the origin. */
+export function cellToWorld(cx, cz, grid) {
+  const g = needGrid(grid, "cellToWorld");
+  return { x: (cx - g / 2 + 0.5) * CELL, z: (cz - g / 2 + 0.5) * CELL };
+}
+export function worldToCell(x, z, grid) {
+  const g = needGrid(grid, "worldToCell");
+  return { cx: Math.floor(x / CELL + g / 2), cz: Math.floor(z / CELL + g / 2) };
+}
+
+/** The grid a world was built on. Never guessed — an absent one is a bug. */
+export function gridOf(world) {
+  return needGrid(world && world.grid, "gridOf");
+}
+
+const inBounds = (cx, cz, grid) => cx >= 0 && cz >= 0 && cx < grid && cz < grid;
 
 // Cheap seeded value noise — enough for a rolling basin floor. Sampled by the
 // renderer for terrain height and by the sim for "how deep in the fog are you".
@@ -123,7 +158,7 @@ function blockedGrid(rng) {
     let cz = rng.int(3, GRID - 4);
     const len = rng.int(6, 26);
     for (let s = 0; s < len; s++) {
-      if (inBounds(cx, cz)) blocked[at(cx, cz)] = 1;
+      if (inBounds(cx, cz, GRID)) blocked[at(cx, cz)] = 1;
       const d = rng.int(0, 3);
       cx += d === 0 ? 1 : d === 1 ? -1 : 0;
       cz += d === 2 ? 1 : d === 3 ? -1 : 0;
@@ -144,7 +179,7 @@ function blockedGrid(rng) {
       if (p === gapAt) continue;
       const cx = horiz ? p : fixed;
       const cz = horiz ? fixed : p;
-      if (inBounds(cx, cz)) blocked[at(cx, cz)] = 1;
+      if (inBounds(cx, cz, GRID)) blocked[at(cx, cz)] = 1;
     }
   }
   return blocked;
@@ -152,8 +187,13 @@ function blockedGrid(rng) {
 
 /** Flood fill from a cell; returns a Uint8Array marking the reachable component. */
 export function floodFill(blocked, startCx, startCz) {
+  // The stride comes from the ARRAY, not from a constant or an argument: the
+  // grid is already unambiguously encoded in its length, and deriving it here
+  // means no caller can pass one that disagrees with the map it is filling.
+  const GRID = needGrid(Math.round(Math.sqrt(blocked.length)), "floodFill");
+  if (GRID * GRID !== blocked.length) throw new Error(`floodFill: blocked is ${blocked.length} cells, which is not square`);
   const seen = new Uint8Array(GRID * GRID);
-  if (!inBounds(startCx, startCz) || blocked[startCz * GRID + startCx]) return seen;
+  if (!inBounds(startCx, startCz, GRID) || blocked[startCz * GRID + startCx]) return seen;
   const queue = [startCz * GRID + startCx];
   seen[queue[0]] = 1;
   for (let head = 0; head < queue.length; head++) {
@@ -161,7 +201,7 @@ export function floodFill(blocked, startCx, startCz) {
     const cx = idx % GRID, cz = (idx - cx) / GRID;
     const nbrs = [[cx + 1, cz], [cx - 1, cz], [cx, cz + 1], [cx, cz - 1]];
     for (const [nx, nz] of nbrs) {
-      if (!inBounds(nx, nz)) continue;
+      if (!inBounds(nx, nz, GRID)) continue;
       const ni = nz * GRID + nx;
       if (seen[ni] || blocked[ni]) continue;
       seen[ni] = 1;
@@ -199,7 +239,7 @@ function openNear(blocked, cx, cz) {
       for (let dx = -r; dx <= r; dx++) {
         if (Math.max(Math.abs(dx), Math.abs(dz)) !== r) continue;
         const nx = cx + dx, nz = cz + dz;
-        if (inBounds(nx, nz) && !blocked[nz * GRID + nx]) return { cx: nx, cz: nz };
+        if (inBounds(nx, nz, GRID) && !blocked[nz * GRID + nx]) return { cx: nx, cz: nz };
       }
     }
   }
@@ -255,14 +295,14 @@ export function generateWorld(seed = 1) {
     name: names[i],
     cx: c.cx,
     cz: c.cz,
-    ...cellToWorld(c.cx, c.cz),
+    ...cellToWorld(c.cx, c.cz, GRID),
   }));
   const pylons = picks.slice(MONOLITH_COUNT, MONOLITH_COUNT + PYLON_COUNT).map((c, i) => ({
     id: `p${i}`,
     kind: FEATURE.PYLON,
     cx: c.cx,
     cz: c.cz,
-    ...cellToWorld(c.cx, c.cz),
+    ...cellToWorld(c.cx, c.cz, GRID),
   }));
   // Item kinds: a guaranteed one of each, then a random remainder, then a
   // shuffle. Cycling `i % 3` guaranteed coverage but made every basin on every
@@ -288,7 +328,7 @@ export function generateWorld(seed = 1) {
     itemKind: bag[i],
     cx: c.cx,
     cz: c.cz,
-    ...cellToWorld(c.cx, c.cz),
+    ...cellToWorld(c.cx, c.cz, GRID),
   }));
   const treeStart = MONOLITH_COUNT + PYLON_COUNT + ITEM_COUNT;
   const trees = picks.slice(treeStart, treeStart + TREE_COUNT).map((c, i) => ({
@@ -296,7 +336,7 @@ export function generateWorld(seed = 1) {
     kind: FEATURE.TREE,
     cx: c.cx,
     cz: c.cz,
-    ...cellToWorld(c.cx, c.cz),
+    ...cellToWorld(c.cx, c.cz, GRID),
   }));
   const stoneStart = treeStart + TREE_COUNT;
   const stones = picks.slice(stoneStart, stoneStart + STONE_COUNT).map((c, i) => ({
@@ -304,7 +344,7 @@ export function generateWorld(seed = 1) {
     kind: FEATURE.STONE,
     cx: c.cx,
     cz: c.cz,
-    ...cellToWorld(c.cx, c.cz),
+    ...cellToWorld(c.cx, c.cz, GRID),
   }));
 
   // ---- CONNECTIVITY REPAIR PASS (explicit, then re-verified) ----------------
@@ -348,7 +388,7 @@ export function generateWorld(seed = 1) {
     cell: CELL,
     blocked,
     heightAt,
-    camp: { id: "camp", kind: FEATURE.CAMP, cx: camp.cx, cz: camp.cz, ...cellToWorld(camp.cx, camp.cz) },
+    camp: { id: "camp", kind: FEATURE.CAMP, cx: camp.cx, cz: camp.cz, ...cellToWorld(camp.cx, camp.cz, GRID) },
     monoliths,
     pylons,
     items,
@@ -360,9 +400,10 @@ export function generateWorld(seed = 1) {
 
 /** True if a world-space point is inside a blocked cell (or out of bounds). */
 export function isBlockedAt(world, x, z) {
-  const { cx, cz } = worldToCell(x, z);
-  if (!inBounds(cx, cz)) return true;
-  return !!world.blocked[cz * GRID + cx];
+  const grid = gridOf(world);
+  const { cx, cz } = worldToCell(x, z, grid);
+  if (!inBounds(cx, cz, grid)) return true;
+  return !!world.blocked[cz * grid + cx];
 }
 
 /**
@@ -391,10 +432,11 @@ export function moveWithCollision(world, pos, dx, dz, radius = 0.55) {
  * Returns { ok, unreachable: [featureId] }.
  */
 export function validate(world) {
+  const grid = gridOf(world);
   const reach = floodFill(world.blocked, world.camp.cx, world.camp.cz);
   const unreachable = [];
   for (const f of [...world.monoliths, ...world.pylons, ...world.items, ...world.trees, ...world.stones]) {
-    if (!reach[f.cz * GRID + f.cx]) unreachable.push(f.id);
+    if (!reach[f.cz * grid + f.cx]) unreachable.push(f.id);
   }
   let open = 0;
   for (let i = 0; i < world.blocked.length; i++) if (!world.blocked[i]) open++;
@@ -417,17 +459,29 @@ export function validate(world) {
 // repath several times a second each, and two fresh typed arrays per call is
 // avoidable garbage in the long-run simulations. Safe because findPath is
 // synchronous, single-threaded, and never re-entrant.
-const PATH_PREV = new Int32Array(GRID * GRID);
-const PATH_SEEN = new Uint8Array(GRID * GRID);
+// SIZED TO THE WORLD, not to GRID. Sized to the basin they silently truncated
+// every path on the camp's larger grid: the BFS would run off the end of `seen`,
+// read undefined, and return null or a path through a wall — a companion that
+// stops following, with nothing thrown.
+let PATH_PREV = new Int32Array(GRID * GRID);
+let PATH_SEEN = new Uint8Array(GRID * GRID);
+function scratch(cells) {
+  if (PATH_PREV.length < cells) {
+    PATH_PREV = new Int32Array(cells);
+    PATH_SEEN = new Uint8Array(cells);
+  }
+}
 
 /** Grid path (BFS) between two cells, as an array of {cx,cz}. Used by NPC AI. */
 export function findPath(world, from, to) {
+  const GRID = gridOf(world);
   const startIdx = from.cz * GRID + from.cx;
   const goalIdx = to.cz * GRID + to.cx;
   if (startIdx === goalIdx) return [];
+  scratch(GRID * GRID);
   const prev = PATH_PREV.fill(-1);
   const seen = PATH_SEEN.fill(0);
-  if (!inBounds(from.cx, from.cz) || world.blocked[startIdx]) return null;
+  if (!inBounds(from.cx, from.cz, GRID) || world.blocked[startIdx]) return null;
   const queue = [startIdx];
   seen[startIdx] = 1;
   for (let head = 0; head < queue.length; head++) {
@@ -435,7 +489,7 @@ export function findPath(world, from, to) {
     if (idx === goalIdx) break;
     const cx = idx % GRID, cz = (idx - cx) / GRID;
     for (const [nx, nz] of [[cx + 1, cz], [cx - 1, cz], [cx, cz + 1], [cx, cz - 1]]) {
-      if (!inBounds(nx, nz)) continue;
+      if (!inBounds(nx, nz, GRID)) continue;
       const ni = nz * GRID + nx;
       if (seen[ni] || world.blocked[ni]) continue;
       seen[ni] = 1;

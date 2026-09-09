@@ -8,7 +8,7 @@
 // who lags, who starts narrating things that aren't there. Each rule below exists
 // to make an internal number legible from the outside without printing it.
 
-import { findPath, worldToCell, cellToWorld, moveWithCollision, isBlockedAt, CELL, GRID } from "./world.js?v=mirage-0.13.2";
+import { findPath, worldToCell, cellToWorld, moveWithCollision, isBlockedAt, CELL, gridOf } from "./world.js?v=mirage-0.14.0";
 import {
   BAND,
   bandOf,
@@ -23,7 +23,7 @@ import {
   activatePylon,
   updatePing, isAnswering, isReturning,
   PRIME_WINDOW,
-} from "./state.js?v=mirage-0.13.2";
+} from "./state.js?v=mirage-0.14.0";
 
 // Higher band = worse. Lets a per-companion trait move the pylon-seeking
 // trigger EARLIER than the uniform BRITTLE tell everyone else gets, without
@@ -143,8 +143,9 @@ function stepToward(sim, c, target, speed, dt) {
     // must not be conflated: treating empty as uncomputed re-ran a full BFS for
     // every companion on every tick, which dominated the whole simulation cost.
     if (c.path === null || c.repathTimer <= 0) {
-      const from = worldToCell(c.x, c.z);
-      const to = worldToCell(target.x, target.z);
+      const grid = gridOf(sim.world);
+      const from = worldToCell(c.x, c.z, grid);
+      const to = worldToCell(target.x, target.z, grid);
       c.path = findPath(sim.world, from, to) || [];
       c.repathTimer = REPATH_INTERVAL;
     }
@@ -153,7 +154,7 @@ function stepToward(sim, c, target, speed, dt) {
   let aim = target;
   if (c.path && c.path.length) {
     const node = c.path[0];
-    aim = cellToWorld(node.cx, node.cz);
+    aim = cellToWorld(node.cx, node.cz, gridOf(sim.world));
     if (dist(c, aim) < CELL * 0.6) c.path.shift();
   }
 
@@ -341,15 +342,16 @@ function phantomGoal(sim, c) {
     const r = rng.float(3, 9);
     return { x: sim.player.x + Math.cos(a) * r, z: sim.player.z + Math.sin(a) * r, label: null };
   }
-  const here = worldToCell(c.x, c.z);
+  const grid = gridOf(sim.world);
+  const here = worldToCell(c.x, c.z, grid);
   for (let tries = 0; tries < 20; tries++) {
     const a = rng.float(0, Math.PI * 2);
     const r = rng.float(LOST_GOAL_NEAR, LOST_GOAL_FAR);
     const cx = Math.round(here.cx + (Math.cos(a) * r) / CELL);
     const cz = Math.round(here.cz + (Math.sin(a) * r) / CELL);
-    if (cx < 2 || cz < 2 || cx > GRID - 3 || cz > GRID - 3) continue;
-    if (sim.world.blocked[cz * GRID + cx]) continue;
-    return { ...cellToWorld(cx, cz), label: null };
+    if (cx < 2 || cz < 2 || cx > grid - 3 || cz > grid - 3) continue;
+    if (sim.world.blocked[cz * grid + cx]) continue;
+    return { ...cellToWorld(cx, cz, grid), label: null };
   }
   return { x: c.x, z: c.z, label: null };
 }

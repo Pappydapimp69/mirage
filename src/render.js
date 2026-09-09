@@ -6,9 +6,9 @@
 // list as the real ones.
 
 import * as THREE from "../lib/three.module.js";
-import { CELL, GRID, cellToWorld } from "./world.js?v=mirage-0.13.2";
-import { perceivedMonoliths, perceivedPylons, perceivedCompanions, perceivedWorldItems, distortion } from "./percept.js?v=mirage-0.13.2";
-import { PYLON_RADIUS } from "./state.js?v=mirage-0.13.2";
+import { CELL, cellToWorld, gridOf } from "./world.js?v=mirage-0.14.0";
+import { perceivedMonoliths, perceivedPylons, perceivedCompanions, perceivedWorldItems, distortion } from "./percept.js?v=mirage-0.14.0";
+import { PYLON_RADIUS } from "./state.js?v=mirage-0.14.0";
 
 const PALETTE = {
   sky: 0x0a0f16,
@@ -80,6 +80,11 @@ function verticalFov(aspect, hfov = DEFAULT_HFOV) {
 }
 
 export function createRenderer(canvas, sim) {
+  // The grid of the world being drawn, not the basin constant: the camp's is
+  // larger, and reading `cellKind` at the wrong stride draws a different map
+  // entirely — every cell shifted, with nothing thrown. `world.js` no longer
+  // exports GRID to this module, so a missed site is a ReferenceError.
+  const grid = gridOf(sim.world);
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: "high-performance" });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
 
@@ -131,8 +136,8 @@ export function createRenderer(canvas, sim) {
   rig.add(lamp);
 
   // ---- terrain -------------------------------------------------------------
-  const span = GRID * CELL;
-  const groundGeo = new THREE.PlaneGeometry(span, span, GRID, GRID);
+  const span = grid * CELL;
+  const groundGeo = new THREE.PlaneGeometry(span, span, grid, grid);
   groundGeo.rotateX(-Math.PI / 2);
   {
     const pos = groundGeo.attributes.position;
@@ -144,7 +149,7 @@ export function createRenderer(canvas, sim) {
     for (let i = 0; i < pos.count; i++) {
       const x = pos.getX(i);
       const z = pos.getZ(i);
-      const h = sim.world.heightAt(x / CELL + GRID / 2, z / CELL + GRID / 2);
+      const h = sim.world.heightAt(x / CELL + grid / 2, z / CELL + grid / 2);
       pos.setY(i, h);
       c.copy(lo).lerp(hi, Math.min(1, Math.max(0, (h + 2) / 7)));
       colors[i * 3] = c.r;
@@ -160,7 +165,7 @@ export function createRenderer(canvas, sim) {
   );
   scene.add(ground);
 
-  const terrainHeight = (x, z) => sim.world.heightAt(x / CELL + GRID / 2, z / CELL + GRID / 2);
+  const terrainHeight = (x, z) => sim.world.heightAt(x / CELL + grid / 2, z / CELL + grid / 2);
 
   // ---- what a blocked cell LOOKS like --------------------------------------
   // A basin has one answer: a rock spire. The camp has four, and it needs them —
@@ -172,9 +177,9 @@ export function createRenderer(canvas, sim) {
   // `cellKind` is camp-only. A world without it takes the original path below,
   // unchanged.
   const KIND = { NONE: 0, CABIN: 1, TREELINE: 2, WOOD: 3, PATH: 4 };
-  const kindAt = (cx, cz) => (sim.world.cellKind ? sim.world.cellKind[cz * GRID + cx] : KIND.NONE);
+  const kindAt = (cx, cz) => (sim.world.cellKind ? sim.world.cellKind[cz * grid + cx] : KIND.NONE);
   const isSpire = (cx, cz) => {
-    const i = cz * GRID + cx;
+    const i = cz * grid + cx;
     if (!sim.world.blocked[i]) return false;
     return kindAt(cx, cz) === KIND.NONE;   // anything tagged draws as itself
   };
@@ -194,19 +199,19 @@ export function createRenderer(canvas, sim) {
     // CABINS. One box per tagged cell would read as a wall of cubes, so
     // contiguous runs are merged into a single building per rectangle and only
     // the run's first cell places geometry.
-    const seen = new Uint8Array(GRID * GRID);
-    for (let cz = 0; cz < GRID; cz++) {
-      for (let cx = 0; cx < GRID; cx++) {
-        if (kindAt(cx, cz) !== KIND.CABIN || seen[cz * GRID + cx]) continue;
-        let x1 = cx; while (x1 + 1 < GRID && kindAt(x1 + 1, cz) === KIND.CABIN) x1++;
+    const seen = new Uint8Array(grid * grid);
+    for (let cz = 0; cz < grid; cz++) {
+      for (let cx = 0; cx < grid; cx++) {
+        if (kindAt(cx, cz) !== KIND.CABIN || seen[cz * grid + cx]) continue;
+        let x1 = cx; while (x1 + 1 < grid && kindAt(x1 + 1, cz) === KIND.CABIN) x1++;
         let z1 = cz;
-        outer: while (z1 + 1 < GRID) {
+        outer: while (z1 + 1 < grid) {
           for (let x = cx; x <= x1; x++) if (kindAt(x, z1 + 1) !== KIND.CABIN) break outer;
           z1++;
         }
-        for (let z = cz; z <= z1; z++) for (let x = cx; x <= x1; x++) seen[z * GRID + x] = 1;
+        for (let z = cz; z <= z1; z++) for (let x = cx; x <= x1; x++) seen[z * grid + x] = 1;
 
-        const a = cellToWorld(cx, cz), b = cellToWorld(x1, z1);
+        const a = cellToWorld(cx, cz, grid), b = cellToWorld(x1, z1, grid);
         const w = Math.abs(b.x - a.x) + CELL, d = Math.abs(b.z - a.z) + CELL;
         const mx = (a.x + b.x) / 2, mz = (a.z + b.z) / 2;
         const ground = terrainHeight(mx, mz);
@@ -233,11 +238,11 @@ export function createRenderer(canvas, sim) {
     const crowns = new THREE.InstancedMesh(new THREE.ConeGeometry(1.5, 4.4, 6), leafMat, treeCount);
     const m = new THREE.Matrix4(), q = new THREE.Quaternion();
     let n = 0;
-    for (let cz = 0; cz < GRID; cz++) {
-      for (let cx = 0; cx < GRID; cx++) {
+    for (let cz = 0; cz < grid; cz++) {
+      for (let cx = 0; cx < grid; cx++) {
         const k = kindAt(cx, cz);
         if (k !== KIND.TREELINE && k !== KIND.WOOD) continue;
-        const { x, z } = cellToWorld(cx, cz);
+        const { x, z } = cellToWorld(cx, cz, grid);
         // Deterministic jitter from the cell index — the same camp every time,
         // without touching the sim's rng.
         const j = ((cx * 73856093) ^ (cz * 19349663)) >>> 0;
@@ -264,10 +269,10 @@ export function createRenderer(canvas, sim) {
     for (let i = 0; i < sim.world.cellKind.length; i++) if (sim.world.cellKind[i] === KIND.PATH) pathCount++;
     const dirt = new THREE.InstancedMesh(pathGeo, dirtMat, pathCount);
     let pn = 0;
-    for (let cz = 0; cz < GRID; cz++) {
-      for (let cx = 0; cx < GRID; cx++) {
+    for (let cz = 0; cz < grid; cz++) {
+      for (let cx = 0; cx < grid; cx++) {
         if (kindAt(cx, cz) !== KIND.PATH) continue;
-        const { x, z } = cellToWorld(cx, cz);
+        const { x, z } = cellToWorld(cx, cz, grid);
         m.makeRotationX(-Math.PI / 2);
         // Sample the cell's CORNERS and clear the highest of them. Placing the
         // quad at the cell-centre height buried it: the ground is an
@@ -290,7 +295,7 @@ export function createRenderer(canvas, sim) {
   // ---- rock spires (one instanced mesh for every UNTAGGED blocked cell) -----
   {
     let count = 0;
-    for (let cz = 0; cz < GRID; cz++) for (let cx = 0; cx < GRID; cx++) if (isSpire(cx, cz)) count++;
+    for (let cz = 0; cz < grid; cz++) for (let cx = 0; cx < grid; cx++) if (isSpire(cx, cz)) count++;
     const rocks = new THREE.InstancedMesh(
       new THREE.ConeGeometry(CELL * 0.72, 1, 6),
       new THREE.MeshStandardMaterial({ color: PALETTE.rock, roughness: 1, flatShading: true }),
@@ -299,10 +304,10 @@ export function createRenderer(canvas, sim) {
     const m = new THREE.Matrix4();
     const q = new THREE.Quaternion();
     let n = 0;
-    for (let cz = 0; cz < GRID; cz++) {
-      for (let cx = 0; cx < GRID; cx++) {
+    for (let cz = 0; cz < grid; cz++) {
+      for (let cx = 0; cx < grid; cx++) {
         if (!isSpire(cx, cz)) continue;
-        const { x, z } = cellToWorld(cx, cz);
+        const { x, z } = cellToWorld(cx, cz, grid);
         // Deterministic pseudo-variation from the cell index — no rng needed, and
         // it stays identical across reloads of the same seed.
         const j = ((cx * 73856093) ^ (cz * 19349663)) >>> 0;
@@ -340,14 +345,14 @@ export function createRenderer(canvas, sim) {
     let n = 0;
     // Deterministic scatter from the cell index, so the same seed lays out the
     // same stones on every reload without consuming the sim's rng stream.
-    for (let cz = 1; cz < GRID - 1 && n < MAX; cz++) {
-      for (let cx = 1; cx < GRID - 1 && n < MAX; cx++) {
-        if (sim.world.blocked[cz * GRID + cx]) continue;
+    for (let cz = 1; cz < grid - 1 && n < MAX; cz++) {
+      for (let cx = 1; cx < grid - 1 && n < MAX; cx++) {
+        if (sim.world.blocked[cz * grid + cx]) continue;
         const j = ((cx * 2654435761) ^ (cz * 40503)) >>> 0;
         if (j % 5 !== 0) continue; // ~20% of open cells get one
         const ox = (((j >>> 3) % 100) / 100 - 0.5) * CELL;
         const oz = (((j >>> 11) % 100) / 100 - 0.5) * CELL;
-        const { x, z } = cellToWorld(cx, cz);
+        const { x, z } = cellToWorld(cx, cz, grid);
         const s = 0.5 + ((j >>> 17) % 100) / 140;
         q.setFromAxisAngle(up, ((j >>> 5) % 360) * (Math.PI / 180));
         m.compose(
