@@ -130,6 +130,54 @@ check("a run mid-flight round-trips, INCLUDING the rng stream position", () => {
   eq(fingerprint(restored), fingerprint(sim), "a resumed run diverged from the original after 30s");
 });
 
+// THE PAYLOAD MUST OWN EVERY STRUCTURE IN IT.
+// `serializeRun` handed out two LIVE references — a pylon's `primedBy` array
+// and a companion's `givenUpPylons` object — while copying everything else.
+// Through localStorage that is invisible, because JSON.stringify snapshots
+// them. It is not invisible to the test above, which restores straight from the
+// payload with no JSON hop: the two sims then shared those structures and
+// edited each other. A companion in the ORIGINAL run added themselves to a
+// pylon in the RESTORED one, confirming it a tick early there, and the runs
+// went permanently out of phase. On the basin before mirage-0.15.0 that hit 12
+// of 60 seeds; the fixture seed above simply was not one of them.
+check("the save payload shares no mutable structure with the running sim", () => {
+  const sim = createRun({ seed: 77, difficulty: "standard", level: 1, campaignLength: 3 });
+  sim.time = FULL_DRAIN_AT;
+  advance(sim, 40, { move: { x: 0.4, z: -1 }, yaw: 0.3 });
+  const data = serializeRun(sim);
+  for (let i = 0; i < sim.pylons.length; i++)
+    assert(data.pylons[i].primedBy !== sim.pylons[i].primedBy,
+      `pylon ${sim.pylons[i].id}: the payload holds the sim's own primedBy array`);
+  for (let i = 0; i < sim.party.length; i++) {
+    const live = sim.party[i], packed = data.party[i];
+    if (live.givenUpPylons) assert(packed.givenUpPylons !== live.givenUpPylons,
+      `${live.id}: the payload holds the sim's own givenUpPylons object`);
+    if (live.path) assert(packed.path !== live.path, `${live.id}: the payload holds the sim's own path array`);
+    if (live.inventory) assert(packed.inventory !== live.inventory, `${live.id}: the payload holds the sim's own inventory`);
+    if (live.goal) assert(packed.goal !== live.goal, `${live.id}: the payload holds the sim's own goal object`);
+  }
+  // The strong form: mutating the SIM after packing must not touch the payload.
+  const before = JSON.stringify(data);
+  for (const p of sim.pylons) { p.primedBy.push("intruder"); }
+  for (const c of sim.party) { if (c.givenUpPylons) c.givenUpPylons.intruder = 1; }
+  eq(JSON.stringify(data), before, "mutating the sim after serializeRun changed the payload");
+});
+
+// The test above restores straight from the object. A REAL save does not — it
+// goes out through JSON.stringify into localStorage and comes back parsed, so
+// the payload it restores from is structurally fresh. Both paths have to hold:
+// the direct one catches aliasing, this one is what players actually run.
+check("a run round-trips through JSON, the way a real save does", () => {
+  const sim = createRun({ seed: 77, difficulty: "standard", level: 1, campaignLength: 3 });
+  sim.time = FULL_DRAIN_AT;
+  advance(sim, 40, { move: { x: 0.4, z: -1 }, yaw: 0.3 });
+  const restored = deserializeRun(JSON.parse(JSON.stringify(serializeRun(sim))));
+  eq(fingerprint(restored), fingerprint(sim), "mid-flight state did not survive a JSON round-trip");
+  advance(sim, 30, { move: { x: 0, z: -1 }, yaw: 0.3 });
+  advance(restored, 30, { move: { x: 0, z: -1 }, yaw: 0.3 });
+  eq(fingerprint(restored), fingerprint(sim), "a run resumed from a JSON payload diverged after 30s");
+});
+
 check("a resumed run diverges from one resumed WITHOUT the rng word — the guard works", () => {
   const sim = createRun({ seed: 31, difficulty: "bleak", level: 1, campaignLength: 3 });
   sim.time = FULL_DRAIN_AT;
