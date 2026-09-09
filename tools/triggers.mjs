@@ -24,9 +24,19 @@
 //
 // PROVING IT, THEN PROPAGATING IT. This is hand-derived and project-local on
 // purpose. If it fires on real work here, the mechanism belongs in the Brain
-// CLI, generated from each entry's own "where/why it failed" field rather than
-// maintained by hand — a hand-kept table rots into exactly the stale file this
-// exists to replace. If it does not fire, it dies here and costs nothing.
+// CLI rather than in a hand-kept table that rots into exactly the stale file
+// this exists to replace. If it does not fire, it dies here and costs nothing.
+//
+// WHERE A GENERATOR WOULD READ FROM — measured, not assumed. The original guess
+// here was each entry's "Where/why it failed" field. It is wrong: back-tested
+// over the 12 triggers below that have a source entry in the canon, that field
+// recovers 19.4% of a trigger's `when:` vocabulary and wins for NONE of them,
+// while `What:` recovers 44.5% (8 wins) and `Rule of thumb:` 41.9% (2 wins) —
+// and `Rule of thumb:` is the SHORTER field, so this is not length. The failure
+// field holds the narrative of one incident; the precondition is in `What:` and
+// the generalisation in `Rule of thumb:`. Two of the 14 triggers have no canon
+// entry at all, so a generator can never be complete — it seeds this table, it
+// does not own it. See docs/WORKING-LIST.md, "Denied".
 
 export const TRIGGERS = [
   {

@@ -29,26 +29,10 @@ short on purpose.
 
 ## Open — predicted, unconfirmed
 
-- [ ] The trigger index is hand-derived. The claim is that it should be
-      *generated* from each Brain entry's own "Where/why it failed" field,
-      which is where the precondition already lives. Unconfirmed: I have not
-      checked whether that field is consistently written as a precondition
-      across the corpus, or only in the entries I wrote.
-- [ ] `brain sync` from a session with only `mirage` attached: query and local
-      write will work (the cache is per-machine, at `~/.brain`), but sync
-      PUSHES to the knowledge repos on GitHub. Untested whether that needs them
-      in the session's repo scope or just credentials. This matters — it is the
-      difference between a clean single-repo session and eight CLAUDE.md files
-      loading at once.
+_(empty)_
 
 ## Open — found in passing, not yet fixed
 
-- [ ] **22 proposals in the shared intake queue are still HELD**, oldest
-      2026-08-01. Not mine — other projects and earlier sessions. Most are
-      missing `- ID:`, `Tags`, `What` or `Why built`, i.e. the same
-      hand-written-format failure. Until a steward promotes them the system has
-      been told 22 lessons it cannot answer with. Worth a single cleanup pass
-      by whoever owns them.
 - [ ] The `.brain/` local store is gitignored and did NOT survive this
       session's container restart. Anything kept there is scratch in the
       strongest sense. That is why this file is committed.
@@ -58,6 +42,33 @@ short on purpose.
       the constants they chose.
 
 ## Denied — kept so it is not re-proposed
+
+- **"The trigger index should be GENERATED from each Brain entry's own
+  `Where/why it failed` field, which is where the precondition already lives."**
+  Measured, refuted. Back-test: the 14 hand-written triggers, 12 of which have a
+  source entry in the canon (718 memory entries). For each, how much of the
+  trigger's `when:` vocabulary each field of its source entry could have
+  produced:
+
+  | field | mean recall | wins | vs shuffled pairing |
+  |---|---|---|---|
+  | `What` (67 words) | 44.5% | 8/12 | +39.7 |
+  | `Rule of thumb` (39 words) | 41.9% | 2/12 | +37.9 |
+  | `Where/why it failed` (42 words) | 19.4% | **0/12** | +15.0 |
+
+  Not a length artefact — `Rule of thumb` is SHORTER than the failure field and
+  still more than doubles it, and every field was negative-controlled against
+  shuffled trigger/entry pairings. Hand-reading a 24-entry spread across the
+  corpus agrees: 1 states a precondition outright, ~7 state a general mechanism
+  a human could turn into one, ~16 are a post-hoc causal narrative of one
+  incident ("the clear left N default nodes at the front"). Two of the 14
+  triggers have no canon entry at all, so no generator over the corpus could
+  have produced them.
+
+  The precondition lives in `What:`, and the generalisation in `Rule of thumb:`
+  — the failure field is where the *narrative* lives, by design. A generator is
+  still worth building; it must read those two fields, and it will never be
+  complete.
 
 - **"The nightfall stall was a code bug."** It was environment saturation: a
   headless page under software GL with three mounted runs. Six attempts went
