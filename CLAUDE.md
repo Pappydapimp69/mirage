@@ -51,6 +51,15 @@ file-by-file why anything is stuck — run it after any sync.**
 - **When an action would destroy work that is not yours**, "don't ask" means
   don't do it and proceed on your own branch — not decide alone.
 
+### This project's history
+MIRAGE was built inside `Pappydapimp69/Opticon` (branch
+`claude/3d-party-hallucination-game-f31dj0`) and extracted into this standalone
+repo once it stood on its own — see `docs/adr/0001-extracted-from-opticon.md`.
+Opticon's own tension **T26** ("shared vendored library vs standalone
+deployability") tracked the tradeoff this extraction resolves; check it before
+assuming the old shim-based Three.js setup still applies anywhere — it doesn't,
+`lib/three.module.js` here is a real vendored copy.
+<!-- brain:pointer v2 — managed by `brain link`/`sync`; edits here are overwritten -->
 ## Cognitive system: Brain (linked via `brain` CLI)
 This project is linked to the Brain cognitive system. Do not read the node
 repos directly — use the CLI.
@@ -74,7 +83,7 @@ reconciles with main. Keep session output minimal.
   the `local:` bucket, not just the shared counts.
 - **Re-query at each NEW sub-problem, not only at session start.** Every
   non-trivial bug or decision is its own retrieval trigger.
-- **Capture non-bugs too, not only bugs:** reusable pattern -> `ideas` kernel;
+- **Capture non-bugs too, not only bugs:** reusable pattern -> `ideas`;
   unresolved fork -> `tension`; experiment/synthesis -> `exploration`; a
   committed decision -> an ADR in the build (and if it generalizes, ALSO an
   `ideas` kernel). See `orchestration.md`'s write-back table.
@@ -83,14 +92,7 @@ reconciles with main. Keep session output minimal.
   `orchestration.md`.
 - **Surface any open (red/yellow) tension that touches your work to the user**
   before committing to that fork.
-- Schema: memory proposals use `## FULL ENTRY` + `## PROPOSED INDEX LINE`;
-  tensions/exploration use `### ` blocks. Malformed entries are held on `sync`.
-
-### This project's history
-MIRAGE was built inside `Pappydapimp69/Opticon` (branch
-`claude/3d-party-hallucination-game-f31dj0`) and extracted into this standalone
-repo once it stood on its own — see `docs/adr/0001-extracted-from-opticon.md`.
-Opticon's own tension **T26** ("shared vendored library vs standalone
-deployability") tracked the tradeoff this extraction resolves; check it before
-assuming the old shim-based Three.js setup still applies anywhere — it doesn't,
-`lib/three.module.js` here is a real vendored copy.
+- **Never hand-write a proposal format.** `brain mine` prints the current
+  schema verbatim from the memory repo — follow it exactly. A format you
+  invent parses as an EMPTY entry and is held on every field at once.
+<!-- /brain:pointer -->
