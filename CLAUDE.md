@@ -1,3 +1,19 @@
+> # This repository is retired. The work continues in **[SEVEN](https://github.com/Pappydapimp69/seven)**.
+>
+> MIRAGE and SEVEN were the same game with two names. As of 2026-09-12 seven is
+> the single home: the name carries no giveaway about what the game is doing to
+> you, and it means something inside the fiction — there is a seventh crew
+> member who is a hallucination.
+>
+> **What moved.** The `serializeRun` live-reference fix (12 of 60 seeds forked on
+> resume; 0 after) and the per-world grid refactor were ported to seven. The two
+> map enlargements below were NOT: they were sized for a survey-and-return loop
+> against a fixed clock, and seven's design replaces that loop with a traverse.
+>
+> **Do not develop here.** Anything in `docs/` is a frozen record — `IDEAS.md`
+> and `docs/WORKING-LIST.md` in particular have live counterparts in seven that
+> have already moved on. Read seven's copies, not these.
+
 # MIRAGE
 
 ## Before you edit anything

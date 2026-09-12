@@ -1,3 +1,7 @@
+> **FROZEN — this repo is retired.** The live ideas is in
+> [seven](https://github.com/Pappydapimp69/seven) (`docs/IDEAS.md`), and it has moved on
+> from what is written below. Nothing here is maintained.
+
 # Ideas — a place to put things before they get lost
 
 Raw capture. Nothing here is committed to, planned, or designed. An entry

@@ -1,3 +1,7 @@
+> **FROZEN — this repo is retired.** The live working list is in
+> [seven](https://github.com/Pappydapimp69/seven) (`docs/WORKING-LIST.md`), and it has moved on
+> from what is written below. Nothing here is maintained.
+
 # Working list
 
 Brain's local store holds **proposals** — things I already believe and want
